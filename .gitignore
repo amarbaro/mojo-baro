@@ -4,3 +4,4 @@ target/
 build/
 __pycache__/
 *.so
+whiteboard.md

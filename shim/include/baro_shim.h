@@ -17,6 +17,12 @@ void baro_destroy(baro_ctx *ctx);
 int baro_gemm_f16(baro_ctx *ctx, int m, int n, int k, const void *a,
                   const void *b, void *c, float alpha, float beta);
 
+/* Device memory. baro_upload/baro_download are synchronous on ctx's stream. */
+void *baro_device_alloc(size_t bytes);
+void baro_device_free(void *ptr);
+int baro_upload(baro_ctx *ctx, void *dst, const void *src, size_t bytes);
+int baro_download(baro_ctx *ctx, void *dst, const void *src, size_t bytes);
+
 /* Blocks until all work on the context stream has retired. */
 int baro_sync(baro_ctx *ctx);
 

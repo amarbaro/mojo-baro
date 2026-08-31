@@ -12,6 +12,11 @@ thread_local std::string g_last_error;
 void set_error(const char *what) { g_last_error = what; }
 } // namespace
 
+extern "C" int baro_sync(baro_ctx *ctx);
+
+namespace {
+} // namespace
+
 struct baro_ctx {
   hipStream_t stream;
   hipblasLtHandle_t lt;
@@ -134,6 +139,50 @@ extern "C" int baro_gemm_f16(baro_ctx *ctx, int m, int n, int k,
     (void)hipFree(workspace);
   cleanup();
   return rc;
+}
+
+extern "C" void *baro_device_alloc(size_t bytes) {
+  void *ptr = nullptr;
+  if (hipMalloc(&ptr, bytes) != hipSuccess) {
+    set_error("hipMalloc failed");
+    return nullptr;
+  }
+  return ptr;
+}
+
+extern "C" void baro_device_free(void *ptr) {
+  if (ptr)
+    (void)hipFree(ptr);
+}
+
+extern "C" int baro_upload(baro_ctx *ctx, void *dst, const void *src,
+                           size_t bytes) {
+  if (!ctx) {
+    set_error("null context");
+    return -1;
+  }
+  if (hipMemcpyHtoDAsync(reinterpret_cast<hipDeviceptr_t>(dst),
+                         const_cast<void *>(src), bytes,
+                         ctx->stream) != hipSuccess) {
+    set_error("hipMemcpyHtoDAsync failed");
+    return -1;
+  }
+  return baro_sync(ctx);
+}
+
+extern "C" int baro_download(baro_ctx *ctx, void *dst, const void *src,
+                             size_t bytes) {
+  if (!ctx) {
+    set_error("null context");
+    return -1;
+  }
+  if (hipMemcpyDtoHAsync(dst,
+                         reinterpret_cast<hipDeviceptr_t>(const_cast<void *>(src)),
+                         bytes, ctx->stream) != hipSuccess) {
+    set_error("hipMemcpyDtoHAsync failed");
+    return -1;
+  }
+  return baro_sync(ctx);
 }
 
 extern "C" int baro_sync(baro_ctx *ctx) {
