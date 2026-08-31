@@ -9,10 +9,13 @@ import itertools
 import json
 import pathlib
 import re
+import os
 import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+ENV = {**os.environ}
+ENV.setdefault("MODULAR_DEVICE_CONTEXT_MEMORY_MANAGER_SIZE_PERCENT", "10")
 SRC = ROOT / "kernels" / "matmul.mojo"
 OUT = ROOT / "bench" / "sweep.jsonl"
 
@@ -37,7 +40,7 @@ def measure():
     if b.returncode:
         return None, "build failed"
     r = subprocess.run([str(ROOT / ".work/sweep_bin")], cwd=ROOT, text=True,
-                       capture_output=True, timeout=300)
+                       capture_output=True, timeout=300, env=ENV)
     if r.returncode:
         return None, "run failed"
     for line in r.stdout.splitlines():

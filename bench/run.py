@@ -7,6 +7,7 @@ the best previously recorded result for the same shape.
 """
 import json
 import pathlib
+import os
 import subprocess
 import sys
 import time
@@ -15,6 +16,13 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 LOG = ROOT / "bench" / "log.jsonl"
 BIN = ROOT / ".work" / "bench"
 SHIM = ROOT / ".work" / "shim-build"
+
+
+# MAX's device pool otherwise claims ~90% of VRAM on DeviceContext creation.
+# At 100% hipBLASLt cannot allocate its handle and the process segfaults; the
+# cap costs nothing here and measured slightly faster.
+ENV = {**os.environ}
+ENV.setdefault("MODULAR_DEVICE_CONTEXT_MEMORY_MANAGER_SIZE_PERCENT", "10")
 
 
 def sh(*cmd, **kw):
@@ -52,7 +60,7 @@ def main():
         print(build.stderr, file=sys.stderr)
         return 1
 
-    run = subprocess.run([str(BIN)], cwd=ROOT, text=True, capture_output=True)
+    run = subprocess.run([str(BIN)], cwd=ROOT, text=True, capture_output=True, env=ENV)
     if run.returncode:
         print(run.stderr, file=sys.stderr)
         return 1

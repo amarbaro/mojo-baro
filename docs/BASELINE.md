@@ -61,9 +61,15 @@ reporting throughput and exits non-zero if any variant is wrong.
 
 | size | hipBLASLt | regtile | winner |
 |---|---|---|---|
-| 512³ | 5201 | 5133 | vendor +1.3% |
+| 512³ | 5370 | 5103 | vendor +5.2% |
 | 1024³ | 6905 | 6790 | vendor +1.7% |
 | 2048³ | 7089 | 7349 | ours +3.7% |
+| 4096³ | 6758 | 7236 | ours +7.1% |
+| 8192³ | 6263 | 6290 | tie +0.4% |
+
+Both peak around 2048–4096³ and decline after; neither scales past 4096³, which
+points at L2/HBM traffic rather than compute. `naive` degrades monotonically
+(1129 → 658) as the working set outgrows cache.
 
 Both sustain ~7.1 TFLOPS at large sizes, roughly **23% of the ~30.7 TFLOPS
 plain-FMA peak** (~61 TFLOPS is the dual-issue figure).
@@ -118,6 +124,22 @@ only reachable through `hipblaslt_ext`**, not the C API, and are worth more than
 algorithm choice: they took 3097 → 5201 GFLOP/s. Winning `splitK` decays with
 size (4 at 512³, 1 at 2048³), consistent with small problems failing to fill the
 GPU with workgroups.
+
+**MAX claims ~90% of VRAM on `DeviceContext()` creation.** It is a pool, not a
+leak: it appears instantly, sits at ~22.7 GB whether the problem is 4096³
+(192 MB of matrices) or 8192³ (768 MB), and stops at whatever is free. Cap it
+with `MODULAR_DEVICE_CONTEXT_MEMORY_MANAGER_SIZE_PERCENT` — the bench harness
+defaults it to 10.
+
+| cap | VRAM held | regtile GFLOP/s (1024³) |
+|---|---|---|
+| 100% | 23.06 GB | **segfault in `hipblasLtCreate`** |
+| 10% | 2.72 GB | 7703 |
+| 2% | 0.88 GB | 7591 |
+
+At 100% there is nothing left for hipBLASLt to allocate its handle and the
+process dies. Capping costs no throughput — it measured slightly *faster*.
+This is the constraint on co-tenancy: uncapped, one MAX process owns the card.
 
 **gfx1100 is thinly tuned in hipBLASLt.** 8 fp32 (`SS_SS`) Tensile libraries vs
 134 for gfx942; 95 total gfx1100 files vs 1111. The fp32 heuristic offers only
