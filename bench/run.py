@@ -74,8 +74,9 @@ def history():
 
 
 def main():
+    src = sys.argv[1] if len(sys.argv) > 1 else "bench/bench.mojo"
     build = sh(
-        str(ROOT / ".venv/bin/mojo"), "build", "bench/bench.mojo",
+        str(ROOT / ".venv/bin/mojo"), "build", src,
         "-o", str(BIN), "-I", "kernels",
         "-Xlinker", f"-L{SHIM}", "-Xlinker", "-lbaro_shim",
         "-Xlinker", "-rpath", "-Xlinker", str(SHIM),
