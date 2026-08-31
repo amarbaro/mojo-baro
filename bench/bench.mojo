@@ -9,7 +9,11 @@ from std.math import ceildiv
 from std.sys import has_accelerator
 from std.time import perf_counter_ns
 
-comptime WARMUP_SECONDS = 4.0
+# The GPU ramps to full clocks in ~0.4 s of BACK-TO-BACK work and drops as soon
+# as it idles. The host-side correctness check between variants is long enough
+# to lose the clocks, so each variant re-warms immediately before it is timed;
+# a single warmup at the start biased whichever variant ran first.
+comptime WARMUP_SECONDS = 1.0
 from max.gpu.host import DeviceContext, HostBuffer
 from layout import TileTensor, row_major
 
@@ -21,7 +25,6 @@ from matmul import (
 comptime M = 512
 comptime N = 512
 comptime K = 512
-comptime WARMUP = 10
 comptime ITERS = 200
 
 comptime a_layout = row_major[M, K]()
@@ -85,20 +88,15 @@ def main() raises:
         type_of(a_layout), type_of(b_layout), type_of(c_layout)
     ]
 
-    # The GPU idles at ~28 MHz and ramps under sustained load. A short warmup
-    # measures a cold card: 1024^3 read 23 TFLOPS cold and 55 TFLOPS after 4 s
-    # of continuous work. Drive the clocks up before timing anything.
+    # --- naive ---
     var w0 = perf_counter_ns()
     while Float64(perf_counter_ns() - w0) / 1.0e9 < WARMUP_SECONDS:
         for _ in range(20):
-            ctx.enqueue_function[regtile](
-                A, B, C, Int32(M), Int32(N), Int32(K),
-                grid_dim=RGRID, block_dim=RBLOCK
+            ctx.enqueue_function[naive](
+                A, B, C, Int32(M), Int32(N), Int32(K), grid_dim=GRID, block_dim=BLOCK
             )
         ctx.synchronize()
-
-    # --- naive ---
-    for _ in range(WARMUP):
+    for _ in range(1):
         ctx.enqueue_function[naive](A, B, C, Int32(M), Int32(N), Int32(K), grid_dim=GRID, block_dim=BLOCK)
     ctx.synchronize()
     var t0 = perf_counter_ns()
@@ -111,9 +109,13 @@ def main() raises:
     var naive_err = check(a_host, b_host, c_host)
 
     # --- tiled ---
-    for _ in range(WARMUP):
-        ctx.enqueue_function[tiled](A, B, C, Int32(M), Int32(N), Int32(K), grid_dim=GRID, block_dim=BLOCK)
-    ctx.synchronize()
+    w0 = perf_counter_ns()
+    while Float64(perf_counter_ns() - w0) / 1.0e9 < WARMUP_SECONDS:
+        for _ in range(20):
+            ctx.enqueue_function[tiled](
+                A, B, C, Int32(M), Int32(N), Int32(K), grid_dim=GRID, block_dim=BLOCK
+            )
+        ctx.synchronize()
     t0 = perf_counter_ns()
     for _ in range(ITERS):
         ctx.enqueue_function[tiled](A, B, C, Int32(M), Int32(N), Int32(K), grid_dim=GRID, block_dim=BLOCK)
@@ -124,11 +126,13 @@ def main() raises:
     var tiled_err = check(a_host, b_host, c_host)
 
     # --- register-tiled ---
-    for _ in range(WARMUP):
-        ctx.enqueue_function[regtile](
-            A, B, C, Int32(M), Int32(N), Int32(K), grid_dim=RGRID, block_dim=RBLOCK
-        )
-    ctx.synchronize()
+    w0 = perf_counter_ns()
+    while Float64(perf_counter_ns() - w0) / 1.0e9 < WARMUP_SECONDS:
+        for _ in range(20):
+            ctx.enqueue_function[regtile](
+                A, B, C, Int32(M), Int32(N), Int32(K), grid_dim=RGRID, block_dim=RBLOCK
+            )
+        ctx.synchronize()
     t0 = perf_counter_ns()
     for _ in range(ITERS):
         ctx.enqueue_function[regtile](
@@ -146,9 +150,11 @@ def main() raises:
     var pb = Int(b_dev.unsafe_ptr())
     var pc = Int(c_dev.unsafe_ptr())
 
-    for _ in range(WARMUP):
-        baro.gemm_f32(M, N, K, pa, pb, pc)
-    baro.sync()
+    w0 = perf_counter_ns()
+    while Float64(perf_counter_ns() - w0) / 1.0e9 < WARMUP_SECONDS:
+        for _ in range(20):
+            baro.gemm_f32(M, N, K, pa, pb, pc)
+        baro.sync()
     t0 = perf_counter_ns()
     for _ in range(ITERS):
         baro.gemm_f32(M, N, K, pa, pb, pc)

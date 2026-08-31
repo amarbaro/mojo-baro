@@ -131,6 +131,21 @@ algorithm choice: they took 3097 → 5201 GFLOP/s. Winning `splitK` decays with
 size (4 at 512³, 1 at 2048³), consistent with small problems failing to fill the
 GPU with workgroups.
 
+**Never let the GPU idle inside a benchmark.** The card sits at ~28 MHz / 31 W
+and ramps to ~3000 MHz in **~0.4 s of back-to-back work**, then holds. It drops
+again the moment anything interrupts. Consequences, all measured:
+
+- A fixed 10-iteration warmup (~10 ms at 512³) never leaves idle clocks.
+- The bias tracks *measurement order*: whichever variant runs first is penalised
+  most. Fixing it moved naive +33%, regtile +9%, hipblaslt +4%.
+- **Each variant re-warms immediately before it is timed.** One warmup at the
+  start is not enough — the host-side correctness check between variants is long
+  enough to lose the clocks.
+- Do not call `rocm-smi` inside a timing loop. Doing so idled the GPU between
+  samples and produced a fake 11k↔27k GFLOP/s oscillation at half true speed;
+  power read 31–54 W against a 290 W cap, which is the tell. Sample clocks from
+  a separate process.
+
 **MAX claims ~90% of VRAM on `DeviceContext()` creation.** It is a pool, not a
 leak: it appears instantly, sits at ~22.7 GB whether the problem is 4096³
 (192 MB of matrices) or 8192³ (768 MB), and stops at whatever is free. Cap it
