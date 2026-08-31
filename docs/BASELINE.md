@@ -170,6 +170,22 @@ FP16/BF16 -> FP32)"*. **Any fp16 TFLOPS figure (aiter's ~82–89) is therefore n
 comparable to this fp32 benchmark** — they use different hardware inside the
 same chip.
 
+**fp16 WMMA kernel — measured (`bench/bench_fp16.mojo`, `kernels/matmul_wmma_lds.mojo`).**
+`WARPS 4x4 WTILE 2x1`, swept over 72 configs with `./bench/sweep.py wmma`:
+
+| size | ours | aiter tuned Triton |
+|---|---|---|
+| 512³ | **9285** | 6175 |
+| 1024³ | 21732 | 47485 |
+| 2048³ | 28758 | 82202 |
+| 4096³ | 27133 | 88897 |
+
+We lead at 512³ and trail by ~3x at 4096³. **`WTILE_N=1` is on every top-nine
+config** — a wave owning more than one 16-wide column strip halves throughput —
+but the winners use 512 threads and a 128x64 block tile. The rule here is *many
+resident waves each owning a thin column strip*, not small blocks. `BLK_K` must
+stay at 16: widening it to 64 puts 16 KB of LDS in a block and halves throughput.
+
 **fp16 WMMA in Mojo works, and the fragment shape is the trap.** RDNA3 wave32
 wants **a/b = 16 wide, c/d = 8 wide** (matching
 `__builtin_amdgcn_wmma_f32_16x16x16_f16_w32` typed `V8fV16hV16hV8f`). The
