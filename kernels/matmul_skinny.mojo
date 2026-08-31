@@ -24,13 +24,11 @@ from layout import TileTensor, TensorLayout, row_major, stack_allocation
 
 from matmul import dtype
 
-# Swept 2026-09-01 at 8x4096x4096: SPLITK 8/16/32 -> 2744/4731/4826,
-# SBN 64/128/256 -> 3167/4826/4902, KCHUNK 128/512 -> 5028/4857.
-comptime SM = 8          # rows a block carries = max supported M
-comptime SBN = 256       # columns per block; one per thread
-comptime SPLITK = 32     # K-dimension grid split; grid = (N/SBN) * SPLITK
+comptime SM = 8
+comptime SBN = 256
+comptime SPLITK = 32
 comptime SK_THREADS = SBN
-comptime KCHUNK = 128    # LDS A-slice depth: 8 * 128 * 4B = 4 KB
+comptime KCHUNK = 128
 
 
 def matmul_skinny[
@@ -58,13 +56,10 @@ def matmul_skinny[
     var tid = thread_idx.x
     var col = block_idx.x * SBN + tid
 
-    # This block's K slice.
     var kslice = (K + SPLITK - 1) // SPLITK
     var k0 = block_idx.y * kslice
     var k1 = min(k0 + kslice, K)
 
-    # k-major so the compute loop reads one SM-wide vector per k -- one LDS
-    # read instead of SM scalar reads; the loop was issue-bound on LDS ops.
     var sa = stack_allocation[dtype, address_space=AddressSpace.SHARED](
         row_major[KCHUNK, SM]()
     )
@@ -77,7 +72,6 @@ def matmul_skinny[
     while kk < k1:
         var clen = min(KCHUNK, k1 - kk)
 
-        # Stage the clen x 8 A slab transposed; consecutive tids -> consecutive k.
         comptime for i in range(SM * KCHUNK // SK_THREADS):
             var e = tid + i * SK_THREADS
             var r = e // KCHUNK
@@ -160,8 +154,6 @@ def matmul_skinny_wt[
         barrier()
 
         if col < N:
-            # Per-thread W row is contiguous: 8-wide vector loads (16 B for
-            # bf16), the scalar version was 40x off the bf16 roof.
             var Wv = W.vectorize[1, 8]()
             comptime assert Wv.flat_rank == 2
             for kv in range(clen // 8):
@@ -241,7 +233,6 @@ def matmul_skinny_q8[
         barrier()
 
         if col < N:
-            # One 32 B vector load per block, dequantized in registers.
             var Qv = Wq.vectorize[1, Q8_BLOCK]()
             comptime assert Qv.flat_rank == 2
             for blk in range(clen // Q8_BLOCK):

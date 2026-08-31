@@ -44,7 +44,6 @@ def rmsnorm[
         partial += v * v
         i += EW_THREADS
 
-    # Block reduction: warp-reduce, then one warp over the per-warp sums.
     var sums = stack_allocation[
         f32, address_space = AddressSpace.SHARED
     ](row_major[EW_THREADS // WARP_SIZE]())
@@ -141,7 +140,6 @@ def softmax_rows[
         f32, address_space = AddressSpace.SHARED
     ](row_major[EW_THREADS // WARP_SIZE]())
 
-    # Pass 1: max.
     var local_max = Float32(-3.4e38)
     var i = tid
     while i < N:
@@ -160,7 +158,6 @@ def softmax_rows[
             row_max = v
     barrier()
 
-    # Pass 2: exp + sum.
     var partial: Float32 = 0
     i = tid
     while i < N:
@@ -242,7 +239,6 @@ def argmax_row[
         comptime for t in range(EW_THREADS):
             var v = rebind[Scalar[f32]](vals[t])
             var ix = rebind[Scalar[DType.int32]](idxs[t])
-            # Lowest index wins ties, matching the host reference.
             if v > bv or (v == bv and ix < bi):
                 bv = v
                 bi = ix
