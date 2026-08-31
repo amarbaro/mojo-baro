@@ -50,22 +50,34 @@ reporting throughput and exits non-zero if any variant is wrong.
 
 512×512×512, fp32, 200 iterations, 10 warmup. Run-to-run spread <0.5%.
 
-| variant | GFLOP/s | notes |
+| variant | GFLOP/s (512³) | notes |
 |---|---|---|
-| `hipblaslt` | ~2490 | **vendor baseline**, fp32, via the C++ shim |
-| `matmul_naive` | ~1180 | one thread per output element |
+| `hipblaslt` | ~5200 | **vendor baseline**, tuned (algo × splitK × wgm) |
+| `matmul_naive` | ~1250 | one thread per output element |
 | `matmul_tiled` | ~2270 | 16×16 shared-memory tiles |
-| `matmul_regtile` | **~5170** | BM32 BN32 BK8 TM2 TN2, swept |
+| `matmul_regtile` | ~5130 | BM32 BN32 BK8 TM2 TN2, swept |
 
-Scaling, regtile vs hipBLASLt: **2.1× at 512³, 2.4× at 1024³, 2.0× at 2048³.**
-regtile sustains ~7.1 TFLOPS at 1024³ and 2048³, roughly **23% of the ~30.7
-TFLOPS plain-FMA peak** (~61 TFLOPS is the dual-issue figure).
+**regtile and tuned hipBLASLt are a tie**, trading places by size:
 
-**Read the fp32 win carefully.** hipBLASLt is tuned first for fp16/bf16 and for
-CDNA; fp32 on RDNA3 is not its strong path. Beating it here does *not* mean we
-are at vendor-optimal for AI workloads. The honest comparison is fp16/bf16
-against matrix cores (WMMA), which we have not written yet and would very
-likely lose today.
+| size | hipBLASLt | regtile | winner |
+|---|---|---|---|
+| 512³ | 5201 | 5133 | vendor +1.3% |
+| 1024³ | 6905 | 6790 | vendor +1.7% |
+| 2048³ | 7089 | 7349 | ours +3.7% |
+
+Both sustain ~7.1 TFLOPS at large sizes, roughly **23% of the ~30.7 TFLOPS
+plain-FMA peak** (~61 TFLOPS is the dual-issue figure).
+
+**Do not repeat the retracted claim.** An earlier version of this file recorded
+regtile as ~2× faster than hipBLASLt. That was measuring an *untuned vendor
+call*, not a fast kernel. Removing three defects in our own shim — per-call
+workspace allocation, trusting the heuristic's ordering, and never setting
+splitK/wgm — took hipBLASLt from 2497 to 5201 GFLOP/s at 512³ and erased the
+lead entirely. Matching a tuned hipBLASLt is still a good result; it is a much
+smaller claim than the one first recorded.
+
+A vendor baseline that looks easy to beat is a bug in your harness until
+proven otherwise.
 
 ## Hard-won facts — do not relearn these
 
@@ -97,11 +109,19 @@ reported roughly half their true throughput with ~10% run-to-run spread.
 
 **t-strings reject format specifiers** — build JSON with String concatenation.
 
-**Cache hipBLASLt workspace and algorithm on the context.** Running the
-heuristic and a `hipMalloc`/`hipFree` per call costs more than the GEMM at these
-sizes: it benchmarked the vendor library at 1373 GFLOP/s, *below our naive
-kernel*, and would have overstated our result by 1.8×. A vendor baseline that
-looks bad is a bug in your harness until proven otherwise.
+**hipBLASLt needs three things done right or it benchmarks as garbage.**
+(1) Cache the workspace and selected algorithm on the context — a per-call
+heuristic plus `hipMalloc`/`hipFree` costs more than the GEMM and read 1373
+GFLOP/s, *below our naive kernel*. (2) The heuristic returns candidates in
+predicted, not measured, order — time all of them. (3) **`splitK` and `wgm` are
+only reachable through `hipblaslt_ext`**, not the C API, and are worth more than
+algorithm choice: they took 3097 → 5201 GFLOP/s. Winning `splitK` decays with
+size (4 at 512³, 1 at 2048³), consistent with small problems failing to fill the
+GPU with workgroups.
+
+**gfx1100 is thinly tuned in hipBLASLt.** 8 fp32 (`SS_SS`) Tensile libraries vs
+134 for gfx942; 95 total gfx1100 files vs 1111. The fp32 heuristic offers only
+**4** candidate algorithms at any size. This is the contribution opportunity.
 
 **MAX `DeviceBuffer.unsafe_ptr()`** yields a raw device address that the shim's
 hipBLASLt calls accept directly — no copy needed to compare against vendor.
