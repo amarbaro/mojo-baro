@@ -8,6 +8,8 @@ kernel that is wrong is a failure, not a result.
 from std.math import ceildiv
 from std.sys import has_accelerator
 from std.time import perf_counter_ns
+
+comptime WARMUP_SECONDS = 4.0
 from max.gpu.host import DeviceContext, HostBuffer
 from layout import TileTensor, row_major
 
@@ -70,12 +72,30 @@ def main() raises:
     comptime BLOCK = (TILE, TILE)
     comptime FLOPS = 2.0 * Float64(M) * Float64(N) * Float64(K)
 
+    comptime regtile = matmul_regtile[
+        type_of(a_layout), type_of(b_layout), type_of(c_layout)
+    ]
+    comptime RGRID = (ceildiv(N, BN), ceildiv(M, BM))
+    comptime RBLOCK = (BN // TN, BM // TM)
+
     comptime naive = matmul_naive[
         type_of(a_layout), type_of(b_layout), type_of(c_layout)
     ]
     comptime tiled = matmul_tiled[
         type_of(a_layout), type_of(b_layout), type_of(c_layout)
     ]
+
+    # The GPU idles at ~28 MHz and ramps under sustained load. A short warmup
+    # measures a cold card: 1024^3 read 23 TFLOPS cold and 55 TFLOPS after 4 s
+    # of continuous work. Drive the clocks up before timing anything.
+    var w0 = perf_counter_ns()
+    while Float64(perf_counter_ns() - w0) / 1.0e9 < WARMUP_SECONDS:
+        for _ in range(20):
+            ctx.enqueue_function[regtile](
+                A, B, C, Int32(M), Int32(N), Int32(K),
+                grid_dim=RGRID, block_dim=RBLOCK
+            )
+        ctx.synchronize()
 
     # --- naive ---
     for _ in range(WARMUP):
@@ -104,12 +124,6 @@ def main() raises:
     var tiled_err = check(a_host, b_host, c_host)
 
     # --- register-tiled ---
-    comptime regtile = matmul_regtile[
-        type_of(a_layout), type_of(b_layout), type_of(c_layout)
-    ]
-    comptime RGRID = (ceildiv(N, BN), ceildiv(M, BM))
-    comptime RBLOCK = (BN // TN, BM // TM)
-
     for _ in range(WARMUP):
         ctx.enqueue_function[regtile](
             A, B, C, Int32(M), Int32(N), Int32(K), grid_dim=RGRID, block_dim=RBLOCK
