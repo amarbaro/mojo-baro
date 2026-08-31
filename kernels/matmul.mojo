@@ -100,11 +100,11 @@ def matmul_tiled[
 # where the arithmetic intensity comes from: the tiled kernel above is still
 # bound by shared-memory traffic, one load per multiply-add.
 
-comptime BM = 64
-comptime BN = 64
-comptime BK = 16
-comptime TM = 4
-comptime TN = 4
+comptime BM = 32
+comptime BN = 32
+comptime BK = 8
+comptime TM = 2
+comptime TN = 2
 comptime NTHREADS = (BM // TM) * (BN // TN)  # 256
 
 

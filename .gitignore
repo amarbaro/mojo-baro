@@ -6,3 +6,4 @@ __pycache__/
 *.so
 whiteboard.md
 bench/log.jsonl
+bench/sweep.jsonl
