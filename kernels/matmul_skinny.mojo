@@ -104,6 +104,75 @@ def matmul_skinny[
             Cp[block_idx.y, i, col] = rebind[Cp.ElementType](acc[i])
 
 
+def matmul_skinny_wt[
+    in_dtype: DType,
+    ALayout: TensorLayout, WLayout: TensorLayout, PLayout: TensorLayout
+](
+    A: TileTensor[in_dtype, ALayout, MutAnyOrigin],
+    W: TileTensor[in_dtype, WLayout, MutAnyOrigin],
+    Cp: TileTensor[dtype, PLayout, MutAnyOrigin],
+    m: Int32,
+    n: Int32,
+    k_dim: Int32,
+):
+    """skinny with W in GGUF-native [out, in] row-major layout (= B transposed).
+
+    C[m, col] = sum_k A[m, k] * W[col, k]. Each thread owns one output column
+    and walks its W row contiguously in k, so per-thread reads are sequential
+    rather than block-coalesced.
+    """
+    comptime assert A.flat_rank == 2 and W.flat_rank == 2 and Cp.flat_rank == 3
+
+    var M = Int(m)
+    var N = Int(n)
+    var K = Int(k_dim)
+
+    var tid = thread_idx.x
+    var col = block_idx.x * SBN + tid
+
+    var kslice = (K + SPLITK - 1) // SPLITK
+    var k0 = block_idx.y * kslice
+    var k1 = min(k0 + kslice, K)
+
+    var sa = stack_allocation[dtype, address_space=AddressSpace.SHARED](
+        row_major[KCHUNK, SM]()
+    )
+    var sav = sa.vectorize[1, SM]()
+    comptime assert sav.flat_rank == 2
+
+    var acc = SIMD[dtype, SM](0)
+
+    var kk = k0
+    while kk < k1:
+        var clen = min(KCHUNK, k1 - kk)
+
+        comptime for i in range(SM * KCHUNK // SK_THREADS):
+            var e = tid + i * SK_THREADS
+            var r = e // KCHUNK
+            var kc = e % KCHUNK
+            var g = kk + kc
+            sa[kc, r] = rebind[sa.ElementType](
+                rebind[Scalar[in_dtype]](A[r, g]).cast[
+                    dtype
+                ]() if r < M and kc < clen else 0
+            )
+        barrier()
+
+        if col < N:
+            for k in range(clen):
+                var w_val = rebind[Scalar[in_dtype]](W[col, kk + k]).cast[
+                    dtype
+                ]()
+                var a_vec = rebind[SIMD[dtype, SM]](sav[k, 0])
+                acc += a_vec * w_val
+        barrier()
+        kk += KCHUNK
+
+    if col < N:
+        comptime for i in range(SM):
+            Cp[block_idx.y, i, col] = rebind[Cp.ElementType](acc[i])
+
+
 def skinny_reduce[
     PLayout: TensorLayout, CLayout: TensorLayout
 ](
