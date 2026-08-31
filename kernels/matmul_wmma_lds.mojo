@@ -8,6 +8,18 @@ fragments from LDS.
 
 Fragment shape and lane mapping are as documented in matmul_wmma.mojo:
 RDNA3 wave32 wants a/b 16 wide, c/d 8 wide.
+
+Two things were tried here and are NOT worth retrying:
+
+  Vectorizing the LDS fragment reads. A fragments are already contiguous and the
+  compiler handles them; forcing 8-wide reads changed nothing (9208 vs 9285 at
+  512^3, 28763 vs 28758 at 2048^3). B fragments are strided, and staging B
+  transposed to make them contiguous cost ~3% everywhere -- the strided LDS
+  store is dearer than the wide read is worth. Same result the fp32 `ldst`
+  variant produced.
+
+  BLK_K = 64, so one LDS stage feeds four matrix-core steps. Worse everywhere
+  (2048^3: 28758 -> 8602 scale). 16 KB of LDS per block destroys occupancy.
 """
 
 from max.gpu.memory import AddressSpace
