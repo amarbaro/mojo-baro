@@ -2,9 +2,15 @@
 
 #include <hip/hip_runtime.h>
 #include <hipblaslt/hipblaslt.h>
+#include <hipblaslt/hipblaslt-ext.hpp>
 
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <vector>
+
+#define BARO_MAX_ALGOS 32
+#define BARO_TUNE_REPS 5
 
 namespace {
 thread_local std::string g_last_error;
@@ -30,6 +36,12 @@ struct baro_ctx {
   hipblasLtMatmulAlgo_t algo;
   size_t algo_ws;
   int cached_m, cached_n, cached_k;
+  int n_algos, chosen_algo;
+  /* Best (algorithm, splitK, workgroup-mapping) found for the cached shape.
+     splitK and wgm are only reachable through the ext API and are worth far
+     more than algorithm choice alone on gfx1100. */
+  int best_splitk, best_wgm;
+  bool have_tuned;
   hipDataType cached_dt;
 };
 
@@ -72,6 +84,9 @@ extern "C" void baro_destroy(baro_ctx *ctx) {
 }
 
 namespace {
+
+/* Row-major A(m,k)*B(k,n) is issued as the column-major product B'(n,k)*A'(k,m),
+   so hipBLASLt sees a plain NN GEMM with the operands swapped. */
 int gemm_impl(baro_ctx *ctx, int m, int n, int k, const void *a, const void *b,
               void *c, float alpha, float beta, hipDataType dt) {
   if (!ctx || !a || !b || !c) {
@@ -79,87 +94,125 @@ int gemm_impl(baro_ctx *ctx, int m, int n, int k, const void *a, const void *b,
     return -1;
   }
 
-  // Row-major A(m,k) * B(k,n) is computed as the column-major product
-  // B'(n,k) * A'(k,m), which hipBLASLt sees as an ordinary NN GEMM.
-  hipblasLtMatrixLayout_t la = nullptr, lb = nullptr, lc = nullptr;
-  hipblasLtMatmulDesc_t desc = nullptr;
-  int rc = -1;
+  hipblaslt_ext::Gemm gemm(ctx->lt, HIPBLAS_OP_N, HIPBLAS_OP_N, dt, dt, dt, dt,
+                           HIPBLAS_COMPUTE_32F);
+  hipblaslt_ext::GemmEpilogue epilogue;
+  hipblaslt_ext::GemmInputs inputs;
+  inputs.setA(const_cast<void *>(b));
+  inputs.setB(const_cast<void *>(a));
+  inputs.setC(c);
+  inputs.setD(c);
+  inputs.setAlpha(&alpha);
+  inputs.setBeta(&beta);
 
-  auto cleanup = [&] {
-    if (desc) hipblasLtMatmulDescDestroy(desc);
-    if (lc) hipblasLtMatrixLayoutDestroy(lc);
-    if (lb) hipblasLtMatrixLayoutDestroy(lb);
-    if (la) hipblasLtMatrixLayoutDestroy(la);
-  };
-
-  if (hipblasLtMatrixLayoutCreate(&lb, dt, n, k, n) !=
-          HIPBLAS_STATUS_SUCCESS ||
-      hipblasLtMatrixLayoutCreate(&la, dt, k, m, k) !=
-          HIPBLAS_STATUS_SUCCESS ||
-      hipblasLtMatrixLayoutCreate(&lc, dt, n, m, n) !=
-          HIPBLAS_STATUS_SUCCESS) {
-    set_error("hipblasLtMatrixLayoutCreate failed");
-    cleanup();
-    return rc;
-  }
-
-  if (hipblasLtMatmulDescCreate(&desc, HIPBLAS_COMPUTE_32F, HIP_R_32F) !=
+  if (gemm.setProblem(n, m, k, 1, epilogue, inputs) !=
       HIPBLAS_STATUS_SUCCESS) {
-    set_error("hipblasLtMatmulDescCreate failed");
-    cleanup();
-    return rc;
+    set_error("ext setProblem failed");
+    return -1;
   }
 
-  hipblasOperation_t op = HIPBLAS_OP_N;
-  hipblasLtMatmulDescSetAttribute(desc, HIPBLASLT_MATMUL_DESC_TRANSA, &op,
-                                  sizeof(op));
-  hipblasLtMatmulDescSetAttribute(desc, HIPBLASLT_MATMUL_DESC_TRANSB, &op,
-                                  sizeof(op));
-
-  const bool shape_changed = !ctx->have_algo || ctx->cached_m != m ||
+  const bool shape_changed = !ctx->have_tuned || ctx->cached_m != m ||
                              ctx->cached_n != n || ctx->cached_k != k ||
                              ctx->cached_dt != dt;
-  if (shape_changed) {
-    hipblasLtMatmulPreference_t pref = nullptr;
-    if (hipblasLtMatmulPreferenceCreate(&pref) != HIPBLAS_STATUS_SUCCESS) {
-      set_error("hipblasLtMatmulPreferenceCreate failed");
-      cleanup();
-      return rc;
-    }
-    hipblasLtMatmulPreferenceSetAttribute(
-        pref, HIPBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &ctx->workspace_size,
-        sizeof(ctx->workspace_size));
 
-    hipblasLtMatmulHeuristicResult_t heuristic{};
-    int returned = 0;
-    auto hs = hipblasLtMatmulAlgoGetHeuristic(ctx->lt, desc, lb, la, lc, lc,
-                                              pref, 1, &heuristic, &returned);
-    hipblasLtMatmulPreferenceDestroy(pref);
-    if (hs != HIPBLAS_STATUS_SUCCESS || returned == 0) {
+  if (shape_changed) {
+    hipblaslt_ext::GemmPreference pref;
+    pref.setMaxWorkspaceBytes(ctx->workspace_size);
+    std::vector<hipblasLtMatmulHeuristicResult_t> cand;
+    if (gemm.algoGetHeuristic(BARO_MAX_ALGOS, pref, cand) !=
+            HIPBLAS_STATUS_SUCCESS ||
+        cand.empty()) {
       set_error("no hipBLASLt algorithm for this problem shape");
-      cleanup();
-      return rc;
+      return -1;
     }
-    ctx->algo = heuristic.algo;
-    ctx->algo_ws = heuristic.workspaceSize;
+
+    /* Search (algorithm, splitK, wgm). splitK matters most at small sizes,
+       where a single-split GEMM cannot fill the GPU with workgroups. Paid
+       once per shape. */
+    static const int kSplitK[] = {0, 1, 2, 4, 8, 16, 32};
+    static const int kWgm[] = {0, 1, 2, 4, 8, 16};
+
+    hipEvent_t ev0, ev1;
+    if (hipEventCreate(&ev0) != hipSuccess ||
+        hipEventCreate(&ev1) != hipSuccess) {
+      set_error("hipEventCreate failed");
+      return -1;
+    }
+
+    float best_ms = -1.0f;
+    int best_algo = -1, best_sk = 0, best_wgm = 0;
+
+    for (size_t i = 0; i < cand.size(); ++i) {
+      for (int sk : kSplitK) {
+        for (int wg : kWgm) {
+          hipblaslt_ext::GemmTuning tuning;
+          tuning.setSplitK(static_cast<uint16_t>(sk));
+          tuning.setWgm(static_cast<int16_t>(wg));
+          size_t need = 0;
+          if (gemm.isAlgoSupported(cand[i].algo, tuning, need) !=
+                  HIPBLAS_STATUS_SUCCESS ||
+              need > ctx->workspace_size)
+            continue;
+          if (gemm.initialize(cand[i].algo, tuning, ctx->workspace, true,
+                              ctx->stream) != HIPBLAS_STATUS_SUCCESS)
+            continue;
+          if (gemm.run(ctx->stream) != HIPBLAS_STATUS_SUCCESS)
+            continue;
+          (void)hipStreamSynchronize(ctx->stream);
+
+          (void)hipEventRecord(ev0, ctx->stream);
+          for (int rep = 0; rep < BARO_TUNE_REPS; ++rep)
+            (void)gemm.run(ctx->stream);
+          (void)hipEventRecord(ev1, ctx->stream);
+          (void)hipEventSynchronize(ev1);
+
+          float ms = 0.0f;
+          if (hipEventElapsedTime(&ms, ev0, ev1) == hipSuccess &&
+              (best_ms < 0.0f || ms < best_ms)) {
+            best_ms = ms;
+            best_algo = static_cast<int>(i);
+            best_sk = sk;
+            best_wgm = wg;
+          }
+        }
+      }
+    }
+    (void)hipEventDestroy(ev0);
+    (void)hipEventDestroy(ev1);
+
+    if (best_algo < 0) {
+      set_error("no supported (algo, splitK, wgm) combination");
+      return -1;
+    }
+
+    ctx->algo = cand[best_algo].algo;
+    ctx->best_splitk = best_sk;
+    ctx->best_wgm = best_wgm;
+    ctx->n_algos = static_cast<int>(cand.size());
+    ctx->chosen_algo = best_algo;
     ctx->cached_m = m;
     ctx->cached_n = n;
     ctx->cached_k = k;
     ctx->cached_dt = dt;
+    ctx->have_tuned = true;
     ctx->have_algo = true;
   }
 
-  if (hipblasLtMatmul(ctx->lt, desc, &alpha, b, lb, a, la, &beta, c, lc, c, lc,
-                      &ctx->algo, ctx->workspace, ctx->algo_ws,
-                      ctx->stream) != HIPBLAS_STATUS_SUCCESS) {
-    set_error("hipblasLtMatmul failed");
-  } else {
-    rc = 0;
+  hipblaslt_ext::GemmTuning tuning;
+  tuning.setSplitK(static_cast<uint16_t>(ctx->best_splitk));
+  tuning.setWgm(static_cast<int16_t>(ctx->best_wgm));
+  if (gemm.initialize(ctx->algo, tuning, ctx->workspace, true, ctx->stream) !=
+      HIPBLAS_STATUS_SUCCESS) {
+    set_error("ext initialize failed");
+    return -1;
   }
-
-  cleanup();
-  return rc;
+  if (gemm.run(ctx->stream) != HIPBLAS_STATUS_SUCCESS) {
+    set_error("ext run failed");
+    return -1;
+  }
+  return 0;
 }
+
 } // namespace
 
 extern "C" int baro_gemm_f16(baro_ctx *ctx, int m, int n, int k, const void *a,
@@ -226,6 +279,18 @@ extern "C" int baro_sync(baro_ctx *ctx) {
     return -1;
   }
   return 0;
+}
+
+extern "C" int baro_algo_count(baro_ctx *ctx) {
+  return ctx ? ctx->n_algos : 0;
+}
+
+extern "C" int baro_splitk(baro_ctx *ctx) { return ctx ? ctx->best_splitk : -1; }
+
+extern "C" int baro_wgm(baro_ctx *ctx) { return ctx ? ctx->best_wgm : -1; }
+
+extern "C" int baro_algo_chosen(baro_ctx *ctx) {
+  return ctx ? ctx->chosen_algo : -1;
 }
 
 extern "C" const char *baro_last_error(void) { return g_last_error.c_str(); }

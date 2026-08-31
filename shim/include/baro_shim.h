@@ -32,6 +32,13 @@ int baro_sync(baro_ctx *ctx);
 
 const char *baro_last_error(void);
 
+/* Diagnostics for the last tuned shape: how many algorithms the heuristic
+   offered, and which one measured fastest. */
+int baro_algo_count(baro_ctx *ctx);
+int baro_algo_chosen(baro_ctx *ctx);
+int baro_splitk(baro_ctx *ctx);
+int baro_wgm(baro_ctx *ctx);
+
 #ifdef __cplusplus
 }
 #endif
