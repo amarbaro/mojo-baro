@@ -52,16 +52,20 @@ reporting throughput and exits non-zero if any variant is wrong.
 
 | variant | GFLOP/s | notes |
 |---|---|---|
-| `matmul_naive` | ~1130 | one thread per output element |
-| `matmul_tiled` | ~2260 | 16×16 shared-memory tiles |
-| `matmul_regtile` | **~3650** | 4×4 per thread (committed config) |
-| `matmul_regtile` (swept best) | **~5040** | BM32 BN32 BK8 TM2 TN2 |
+| `hipblaslt` | ~2490 | **vendor baseline**, fp32, via the C++ shim |
+| `matmul_naive` | ~1180 | one thread per output element |
+| `matmul_tiled` | ~2270 | 16×16 shared-memory tiles |
+| `matmul_regtile` | **~5170** | BM32 BN32 BK8 TM2 TN2, swept |
 
-Peak fp32 on this card is ~61 TFLOPS dual-issue / ~30.7 TFLOPS plain FMA, so
-even the swept best is roughly **16% of practical peak**. The headroom is real.
+Scaling, regtile vs hipBLASLt: **2.1× at 512³, 2.4× at 1024³, 2.0× at 2048³.**
+regtile sustains ~7.1 TFLOPS at 1024³ and 2048³, roughly **23% of the ~30.7
+TFLOPS plain-FMA peak** (~61 TFLOPS is the dual-issue figure).
 
-**No hipBLASLt baseline is wired into the bench yet.** Until it is, we do not
-know how far off vendor-tuned we are. This is the highest-value missing number.
+**Read the fp32 win carefully.** hipBLASLt is tuned first for fp16/bf16 and for
+CDNA; fp32 on RDNA3 is not its strong path. Beating it here does *not* mean we
+are at vendor-optimal for AI workloads. The honest comparison is fp16/bf16
+against matrix cores (WMMA), which we have not written yet and would very
+likely lose today.
 
 ## Hard-won facts — do not relearn these
 
@@ -92,6 +96,15 @@ reported roughly half their true throughput with ~10% run-to-run spread.
 `hip::device` injects `--offload-arch` flags a non-clang host compiler rejects.
 
 **t-strings reject format specifiers** — build JSON with String concatenation.
+
+**Cache hipBLASLt workspace and algorithm on the context.** Running the
+heuristic and a `hipMalloc`/`hipFree` per call costs more than the GEMM at these
+sizes: it benchmarked the vendor library at 1373 GFLOP/s, *below our naive
+kernel*, and would have overstated our result by 1.8×. A vendor baseline that
+looks bad is a bug in your harness until proven otherwise.
+
+**MAX `DeviceBuffer.unsafe_ptr()`** yields a raw device address that the shim's
+hipBLASLt calls accept directly — no copy needed to compare against vendor.
 
 ## Tuning findings
 
