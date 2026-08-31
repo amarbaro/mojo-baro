@@ -81,7 +81,10 @@ def main() raises:
         type_of(a_layout), type_of(b_layout), type_of(c_layout)
     ]
     comptime skinny = matmul_skinny[
-        type_of(a_layout), type_of(b_layout), type_of(p_layout)
+        dtype, type_of(a_layout), type_of(b_layout), type_of(p_layout)
+    ]
+    comptime skinny16 = matmul_skinny[
+        DType.bfloat16, type_of(a_layout), type_of(b_layout), type_of(p_layout)
     ]
     comptime reduce = skinny_reduce[type_of(p_layout), type_of(c_layout)]
 
@@ -158,6 +161,50 @@ def main() raises:
     ctx.synchronize()
     var sk_err = check(a_host, b_host, c_host)
 
+    # --- skinny bf16 (same values, exactly representable; result bit-equal) ---
+    var a16_host = ctx.enqueue_create_host_buffer[DType.bfloat16](M * K)
+    var b16_host = ctx.enqueue_create_host_buffer[DType.bfloat16](K * N)
+    ctx.synchronize()
+    for i in range(M * K):
+        a16_host[i] = a_host[i].cast[DType.bfloat16]()
+    for i in range(K * N):
+        b16_host[i] = b_host[i].cast[DType.bfloat16]()
+    var a16_dev = ctx.enqueue_create_buffer[DType.bfloat16](M * K)
+    var b16_dev = ctx.enqueue_create_buffer[DType.bfloat16](K * N)
+    ctx.enqueue_copy(dst_buf=a16_dev, src_buf=a16_host)
+    ctx.enqueue_copy(dst_buf=b16_dev, src_buf=b16_host)
+    ctx.synchronize()
+    var A16 = TileTensor(a16_dev, a_layout)
+    var B16 = TileTensor(b16_dev, b_layout)
+
+    w0 = perf_counter_ns()
+    while Float64(perf_counter_ns() - w0) / 1.0e9 < WARMUP_SECONDS:
+        for _ in range(20):
+            ctx.enqueue_function[skinny16](
+                A16, B16, Cp, Int32(M), Int32(N), Int32(K),
+                grid_dim=SGRID, block_dim=SK_THREADS,
+            )
+            ctx.enqueue_function[reduce](
+                Cp, C, Int32(M), Int32(N),
+                grid_dim=RED_GRID, block_dim=RED_THREADS,
+            )
+        ctx.synchronize()
+    t0 = perf_counter_ns()
+    for _ in range(ITERS):
+        ctx.enqueue_function[skinny16](
+            A16, B16, Cp, Int32(M), Int32(N), Int32(K),
+            grid_dim=SGRID, block_dim=SK_THREADS,
+        )
+        ctx.enqueue_function[reduce](
+            Cp, C, Int32(M), Int32(N),
+            grid_dim=RED_GRID, block_dim=RED_THREADS,
+        )
+    ctx.synchronize()
+    var sk16_ms = Float64(perf_counter_ns() - t0) / 1.0e6 / Float64(ITERS)
+    ctx.enqueue_copy(dst_buf=c_host, src_buf=c_dev)
+    ctx.synchronize()
+    var sk16_err = check(a_host, b_host, c_host)
+
     # --- hipBLASLt vendor baseline ---
     var baro = Baro()
     var pa = Int(a_dev.unsafe_ptr())
@@ -182,6 +229,7 @@ def main() raises:
     emit("dbuf", dbuf_ms, FLOPS / (dbuf_ms * 1.0e6), dbuf_err < 0.01, dbuf_err)
     emit("pipe", pipe_ms, FLOPS / (pipe_ms * 1.0e6), pipe_err < 0.01, pipe_err)
     emit("skinny", sk_ms, FLOPS / (sk_ms * 1.0e6), sk_err < 0.01, sk_err)
+    emit("skinny_bf16", sk16_ms, FLOPS / (sk16_ms * 1.0e6), sk16_err < 0.01, sk16_err)
 
 
 def check(a: HostBuffer[dtype], b: HostBuffer[dtype], c: HostBuffer[dtype]) -> Float64:

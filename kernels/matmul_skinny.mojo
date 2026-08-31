@@ -33,15 +33,21 @@ comptime KCHUNK = 128    # LDS A-slice depth: 8 * 128 * 4B = 4 KB
 
 
 def matmul_skinny[
+    in_dtype: DType,
     ALayout: TensorLayout, BLayout: TensorLayout, PLayout: TensorLayout
 ](
-    A: TileTensor[dtype, ALayout, MutAnyOrigin],
-    B: TileTensor[dtype, BLayout, MutAnyOrigin],
+    A: TileTensor[in_dtype, ALayout, MutAnyOrigin],
+    B: TileTensor[in_dtype, BLayout, MutAnyOrigin],
     Cp: TileTensor[dtype, PLayout, MutAnyOrigin],
     m: Int32,
     n: Int32,
     k_dim: Int32,
 ):
+    """A/B in `in_dtype` (fp32 or bf16 weights); accumulate and emit fp32.
+
+    bf16 halves the B stream, doubling the bandwidth roof; LDS keeps the A
+    slab in fp32 so the inner loop is a single cast on the B load.
+    """
     comptime assert A.flat_rank == 2 and B.flat_rank == 2 and Cp.flat_rank == 3
 
     var M = Int(m)
@@ -56,9 +62,13 @@ def matmul_skinny[
     var k0 = block_idx.y * kslice
     var k1 = min(k0 + kslice, K)
 
+    # k-major so the compute loop reads one SM-wide vector per k -- one LDS
+    # read instead of SM scalar reads; the loop was issue-bound on LDS ops.
     var sa = stack_allocation[dtype, address_space=AddressSpace.SHARED](
-        row_major[SM, KCHUNK]()
+        row_major[KCHUNK, SM]()
     )
+    var sav = sa.vectorize[1, SM]()
+    comptime assert sav.flat_rank == 2
 
     var acc = SIMD[dtype, SM](0)
 
@@ -66,22 +76,26 @@ def matmul_skinny[
     while kk < k1:
         var clen = min(KCHUNK, k1 - kk)
 
-        # Stage the 8 x clen A slab; consecutive tids hit consecutive k.
+        # Stage the clen x 8 A slab transposed; consecutive tids -> consecutive k.
         comptime for i in range(SM * KCHUNK // SK_THREADS):
             var e = tid + i * SK_THREADS
             var r = e // KCHUNK
             var kc = e % KCHUNK
             var g = kk + kc
-            sa[r, kc] = rebind[sa.ElementType](
-                rebind[Scalar[dtype]](A[r, g]) if r < M and kc < clen else 0
+            sa[kc, r] = rebind[sa.ElementType](
+                rebind[Scalar[in_dtype]](A[r, g]).cast[
+                    dtype
+                ]() if r < M and kc < clen else 0
             )
         barrier()
 
         if col < N:
             for k in range(clen):
-                var b_val = rebind[Scalar[dtype]](B[kk + k, col])
-                comptime for i in range(SM):
-                    acc[i] += rebind[Scalar[dtype]](sa[i, k]) * b_val
+                var b_val = rebind[Scalar[in_dtype]](B[kk + k, col]).cast[
+                    dtype
+                ]()
+                var a_vec = rebind[SIMD[dtype, SM]](sav[k, 0])
+                acc += a_vec * b_val
         barrier()
         kk += KCHUNK
 
