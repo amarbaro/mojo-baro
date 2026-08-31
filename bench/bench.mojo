@@ -21,6 +21,10 @@ from baro import Baro
 from matmul import (
     matmul_naive, matmul_tiled, matmul_regtile, dtype, TILE, BM, BN, TM, TN
 )
+from matmul_ldst import matmul_ldst
+from matmul_dbuf import matmul_dbuf
+from matmul_vec4 import matmul_vec4
+from matmul_pipe import matmul_pipe
 
 comptime M = 512
 comptime N = 512
@@ -80,6 +84,20 @@ def main() raises:
     ]
     comptime RGRID = (ceildiv(N, BN), ceildiv(M, BM))
     comptime RBLOCK = (BN // TN, BM // TM)
+
+    comptime ldst = matmul_ldst[
+        type_of(a_layout), type_of(b_layout), type_of(c_layout)
+    ]
+    comptime dbuf = matmul_dbuf[
+        type_of(a_layout), type_of(b_layout), type_of(c_layout)
+    ]
+    comptime vec4 = matmul_vec4[
+        type_of(a_layout), type_of(b_layout), type_of(c_layout)
+    ]
+
+    comptime pipe = matmul_pipe[
+        type_of(a_layout), type_of(b_layout), type_of(c_layout)
+    ]
 
     comptime naive = matmul_naive[
         type_of(a_layout), type_of(b_layout), type_of(c_layout)
@@ -144,6 +162,82 @@ def main() raises:
     ctx.synchronize()
     var reg_err = check(a_host, b_host, c_host)
 
+    # --- ldst ---
+    w0 = perf_counter_ns()
+    while Float64(perf_counter_ns() - w0) / 1.0e9 < WARMUP_SECONDS:
+        for _ in range(20):
+            ctx.enqueue_function[ldst](
+                A, B, C, Int32(M), Int32(N), Int32(K), grid_dim=RGRID, block_dim=RBLOCK
+            )
+        ctx.synchronize()
+    t0 = perf_counter_ns()
+    for _ in range(ITERS):
+        ctx.enqueue_function[ldst](
+            A, B, C, Int32(M), Int32(N), Int32(K), grid_dim=RGRID, block_dim=RBLOCK
+        )
+    ctx.synchronize()
+    var ldst_ms = Float64(perf_counter_ns() - t0) / 1.0e6 / Float64(ITERS)
+    ctx.enqueue_copy(dst_buf=c_host, src_buf=c_dev)
+    ctx.synchronize()
+    var ldst_err = check(a_host, b_host, c_host)
+
+    # --- dbuf ---
+    w0 = perf_counter_ns()
+    while Float64(perf_counter_ns() - w0) / 1.0e9 < WARMUP_SECONDS:
+        for _ in range(20):
+            ctx.enqueue_function[dbuf](
+                A, B, C, Int32(M), Int32(N), Int32(K), grid_dim=RGRID, block_dim=RBLOCK
+            )
+        ctx.synchronize()
+    t0 = perf_counter_ns()
+    for _ in range(ITERS):
+        ctx.enqueue_function[dbuf](
+            A, B, C, Int32(M), Int32(N), Int32(K), grid_dim=RGRID, block_dim=RBLOCK
+        )
+    ctx.synchronize()
+    var dbuf_ms = Float64(perf_counter_ns() - t0) / 1.0e6 / Float64(ITERS)
+    ctx.enqueue_copy(dst_buf=c_host, src_buf=c_dev)
+    ctx.synchronize()
+    var dbuf_err = check(a_host, b_host, c_host)
+
+    # --- vec4 ---
+    w0 = perf_counter_ns()
+    while Float64(perf_counter_ns() - w0) / 1.0e9 < WARMUP_SECONDS:
+        for _ in range(20):
+            ctx.enqueue_function[vec4](
+                A, B, C, Int32(M), Int32(N), Int32(K), grid_dim=RGRID, block_dim=RBLOCK
+            )
+        ctx.synchronize()
+    t0 = perf_counter_ns()
+    for _ in range(ITERS):
+        ctx.enqueue_function[vec4](
+            A, B, C, Int32(M), Int32(N), Int32(K), grid_dim=RGRID, block_dim=RBLOCK
+        )
+    ctx.synchronize()
+    var vec4_ms = Float64(perf_counter_ns() - t0) / 1.0e6 / Float64(ITERS)
+    ctx.enqueue_copy(dst_buf=c_host, src_buf=c_dev)
+    ctx.synchronize()
+    var vec4_err = check(a_host, b_host, c_host)
+
+    # --- pipe ---
+    w0 = perf_counter_ns()
+    while Float64(perf_counter_ns() - w0) / 1.0e9 < WARMUP_SECONDS:
+        for _ in range(20):
+            ctx.enqueue_function[pipe](
+                A, B, C, Int32(M), Int32(N), Int32(K), grid_dim=RGRID, block_dim=RBLOCK
+            )
+        ctx.synchronize()
+    t0 = perf_counter_ns()
+    for _ in range(ITERS):
+        ctx.enqueue_function[pipe](
+            A, B, C, Int32(M), Int32(N), Int32(K), grid_dim=RGRID, block_dim=RBLOCK
+        )
+    ctx.synchronize()
+    var pipe_ms = Float64(perf_counter_ns() - t0) / 1.0e6 / Float64(ITERS)
+    ctx.enqueue_copy(dst_buf=c_host, src_buf=c_dev)
+    ctx.synchronize()
+    var pipe_err = check(a_host, b_host, c_host)
+
     # --- hipBLASLt vendor baseline, same device buffers ---
     var baro = Baro()
     var pa = Int(a_dev.unsafe_ptr())
@@ -168,6 +262,10 @@ def main() raises:
     emit("naive", naive_ms, FLOPS / (naive_ms * 1.0e6), naive_err < 0.01, naive_err)
     emit("tiled", tiled_ms, FLOPS / (tiled_ms * 1.0e6), tiled_err < 0.01, tiled_err)
     emit("regtile", reg_ms, FLOPS / (reg_ms * 1.0e6), reg_err < 0.01, reg_err)
+    emit("ldst", ldst_ms, FLOPS / (ldst_ms * 1.0e6), ldst_err < 0.01, ldst_err)
+    emit("dbuf", dbuf_ms, FLOPS / (dbuf_ms * 1.0e6), dbuf_err < 0.01, dbuf_err)
+    emit("vec4", vec4_ms, FLOPS / (vec4_ms * 1.0e6), vec4_err < 0.01, vec4_err)
+    emit("pipe", pipe_ms, FLOPS / (pipe_ms * 1.0e6), pipe_err < 0.01, pipe_err)
 
 
 def check(a: HostBuffer[dtype], b: HostBuffer[dtype], c: HostBuffer[dtype]) -> Float64:
