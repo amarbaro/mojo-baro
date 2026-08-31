@@ -53,3 +53,23 @@ before performance at every step (see BASELINE's retracted-claim lesson).
 - Multi-GPU, batching/scheduling (vLLM's turf — single-request decode first).
 - Own tokenizer, GGUF writer, CPU inference path.
 - Beating llama.cpp on formats; we beat it on this GPU or not at all.
+
+## Amendment 2026-09-01 — milestones 1–2 done; milestone 3 rescoped
+
+Done and verified this session:
+1. **GGUF loader path + bf16 GEMM** — `tools/gguf-extract.py` (full v3
+   parser incl. metadata values), `matmul_skinny_wt` consumes GGUF-native
+   [out, in] weights, `test_gguf_gemm` passes on real blk.0.ffn_up.weight
+   (max rel err 6e-4 vs numpy fp32).
+2. **Elementwise pack** — rmsnorm/swiglu/rope/softmax/embed/argmax in
+   `kernels/elementwise.mojo`, all ≤1e-6 rel err vs fp64 host refs.
+
+Rescope: metadata shows qwen35 is a **hybrid SSM/attention** arch —
+`ssm.conv_kernel=4, state_size=128, group_count=16, inner_size=4096`,
+`full_attention_interval=4` (3 of 4 layers are linear-attention/SSM),
+GQA 16 q / 4 kv heads at head_dim 256, YaRN rope (factor 4, sections
+[11,11,10,0], freq_base 1e7), MTP block 32. Milestone 3 therefore needs
+TWO layer types (SSM/linear-attention + gated full attention), not one —
+llama.cpp's qwen3.5 implementation is the working reference. Reference
+against llama.cpp layer dumps, since no HF transformers class may match
+this checkpoint locally.

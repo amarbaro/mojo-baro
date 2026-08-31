@@ -25,19 +25,27 @@ def read_str(f):
     return f.read(n).decode("utf-8")
 
 
-def skip_value(f, vtype):
-    sizes = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
-    if vtype in sizes:
-        f.seek(sizes[vtype], 1)
-    elif vtype == 8:
-        read_str(f)
-    elif vtype == 9:
+SCALAR_FMT = {0: "<B", 1: "<b", 2: "<H", 3: "<h", 4: "<I", 5: "<i",
+              6: "<f", 7: "<B", 10: "<Q", 11: "<q", 12: "<d"}
+
+
+def read_value(f, vtype, want=True):
+    """Read (or skip, want=False) one metadata value."""
+    if vtype in SCALAR_FMT:
+        fmt = SCALAR_FMT[vtype]
+        raw = f.read(struct.calcsize(fmt))
+        return struct.unpack(fmt, raw)[0] if want else None
+    if vtype == 8:
+        s = read_str(f)
+        return s if want else None
+    if vtype == 9:
         (etype,) = struct.unpack("<I", f.read(4))
         (n,) = struct.unpack("<Q", f.read(8))
-        for _ in range(n):
-            skip_value(f, etype)
-    else:
-        raise ValueError(f"unknown kv type {vtype}")
+        # Huge token arrays are only materialized when asked for.
+        keep = want and n <= 4096
+        vals = [read_value(f, etype, keep) for _ in range(n)]
+        return vals if keep else f"<array len={n}>"
+    raise ValueError(f"unknown kv type {vtype}")
 
 
 def parse(path):
@@ -46,13 +54,12 @@ def parse(path):
     assert magic == b"GGUF" and version == 3, (magic, version)
     n_tensors, n_kv = struct.unpack("<QQ", f.read(16))
     align = ALIGN_DEFAULT
+    kv = {}
     for _ in range(n_kv):
         key = read_str(f)
         (vtype,) = struct.unpack("<I", f.read(4))
-        if key == "general.alignment" and vtype == 4:
-            (align,) = struct.unpack("<I", f.read(4))
-        else:
-            skip_value(f, vtype)
+        kv[key] = read_value(f, vtype)
+    align = kv.get("general.alignment", ALIGN_DEFAULT)
     infos = {}
     for _ in range(n_tensors):
         name = read_str(f)
@@ -61,7 +68,7 @@ def parse(path):
         ttype, offset = struct.unpack("<IQ", f.read(4 + 8))
         infos[name] = (dims, ttype, offset)
     data_start = (f.tell() + align - 1) // align * align
-    return f, infos, data_start
+    return f, infos, data_start, kv
 
 
 def main():
@@ -71,10 +78,17 @@ def main():
         i = argv.index("--ref")
         ref_m = int(argv[i + 1])
         del argv[i : i + 2]
+    dump_meta = "--meta" in argv
+    if dump_meta:
+        argv.remove("--meta")
     model, names = argv[0], argv[1:]
     out_dir = Path(__file__).resolve().parent.parent / ".work/gguf"
     out_dir.mkdir(parents=True, exist_ok=True)
-    f, infos, data_start = parse(model)
+    f, infos, data_start, kv = parse(model)
+    if dump_meta:
+        print(json.dumps(kv, indent=1, default=str))
+        if not names:
+            return
     meta = {}
     for name in names:
         dims, ttype, offset = infos[name]
