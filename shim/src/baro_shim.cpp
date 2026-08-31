@@ -11,6 +11,7 @@
 
 #define BARO_MAX_ALGOS 32
 #define BARO_TUNE_REPS 5
+#define BARO_SEARCH_WORKSPACE (64ull * 1024 * 1024)
 
 namespace {
 thread_local std::string g_last_error;
@@ -19,6 +20,11 @@ void set_error(const char *what) { g_last_error = what; }
 } // namespace
 
 extern "C" int baro_sync(baro_ctx *ctx);
+
+namespace {
+/* Grow-only during search, then shrunk once to the winner's requirement. */
+bool ensure_workspace(baro_ctx *ctx, size_t bytes);
+}
 
 namespace {
 } // namespace
@@ -57,13 +63,11 @@ extern "C" baro_ctx *baro_init(int device_id) {
     delete ctx;
     return nullptr;
   }
-  ctx->workspace_size = 32 * 1024 * 1024;
-  if (hipMalloc(&ctx->workspace, ctx->workspace_size) != hipSuccess) {
-    set_error("workspace hipMalloc failed");
-    (void)hipStreamDestroy(ctx->stream);
-    delete ctx;
-    return nullptr;
-  }
+  /* Workspace is sized to what the tuned algorithm actually needs, not to a
+     fixed budget. splitK is the consumer -- it stages partial sums -- so the
+     requirement varies with the tuned configuration and is often zero. */
+  ctx->workspace = nullptr;
+  ctx->workspace_size = 0;
   if (hipblasLtCreate(&ctx->lt) != HIPBLAS_STATUS_SUCCESS) {
     set_error("hipblasLtCreate failed");
     (void)hipStreamDestroy(ctx->stream);
@@ -84,6 +88,24 @@ extern "C" void baro_destroy(baro_ctx *ctx) {
 }
 
 namespace {
+
+bool ensure_workspace(baro_ctx *ctx, size_t bytes) {
+  if (bytes == ctx->workspace_size)
+    return true;
+  if (ctx->workspace) {
+    (void)hipFree(ctx->workspace);
+    ctx->workspace = nullptr;
+  }
+  ctx->workspace_size = 0;
+  if (bytes == 0)
+    return true;
+  if (hipMalloc(&ctx->workspace, bytes) != hipSuccess) {
+    set_error("workspace hipMalloc failed");
+    return false;
+  }
+  ctx->workspace_size = bytes;
+  return true;
+}
 
 /* Row-major A(m,k)*B(k,n) is issued as the column-major product B'(n,k)*A'(k,m),
    so hipBLASLt sees a plain NN GEMM with the operands swapped. */
@@ -116,6 +138,9 @@ int gemm_impl(baro_ctx *ctx, int m, int n, int k, const void *a, const void *b,
                              ctx->cached_dt != dt;
 
   if (shape_changed) {
+    /* Search needs headroom for candidates that stage partial sums. */
+    if (!ensure_workspace(ctx, BARO_SEARCH_WORKSPACE))
+      return -1;
     hipblaslt_ext::GemmPreference pref;
     pref.setMaxWorkspaceBytes(ctx->workspace_size);
     std::vector<hipblasLtMatmulHeuristicResult_t> cand;
@@ -141,6 +166,7 @@ int gemm_impl(baro_ctx *ctx, int m, int n, int k, const void *a, const void *b,
 
     float best_ms = -1.0f;
     int best_algo = -1, best_sk = 0, best_wgm = 0;
+    size_t best_need = 0;
 
     for (size_t i = 0; i < cand.size(); ++i) {
       for (int sk : kSplitK) {
@@ -173,6 +199,7 @@ int gemm_impl(baro_ctx *ctx, int m, int n, int k, const void *a, const void *b,
             best_algo = static_cast<int>(i);
             best_sk = sk;
             best_wgm = wg;
+            best_need = need;
           }
         }
       }
@@ -184,6 +211,10 @@ int gemm_impl(baro_ctx *ctx, int m, int n, int k, const void *a, const void *b,
       set_error("no supported (algo, splitK, wgm) combination");
       return -1;
     }
+
+    /* Drop the search budget down to what the winner actually requires. */
+    if (!ensure_workspace(ctx, best_need))
+      return -1;
 
     ctx->algo = cand[best_algo].algo;
     ctx->best_splitk = best_sk;
@@ -286,6 +317,10 @@ extern "C" int baro_algo_count(baro_ctx *ctx) {
 }
 
 extern "C" int baro_splitk(baro_ctx *ctx) { return ctx ? ctx->best_splitk : -1; }
+
+extern "C" size_t baro_workspace_bytes(baro_ctx *ctx) {
+  return ctx ? ctx->workspace_size : 0;
+}
 
 extern "C" int baro_wgm(baro_ctx *ctx) { return ctx ? ctx->best_wgm : -1; }
 

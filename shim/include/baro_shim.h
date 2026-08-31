@@ -38,6 +38,8 @@ int baro_algo_count(baro_ctx *ctx);
 int baro_algo_chosen(baro_ctx *ctx);
 int baro_splitk(baro_ctx *ctx);
 int baro_wgm(baro_ctx *ctx);
+/* VRAM currently held for GEMM workspace, after right-sizing. */
+size_t baro_workspace_bytes(baro_ctx *ctx);
 
 #ifdef __cplusplus
 }
