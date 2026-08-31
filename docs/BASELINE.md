@@ -42,6 +42,12 @@ directly: two independent owners of one hipBLASLt context is a lifetime bug.
 | Bench + correctness engine | `bench/run.py` | `./bench/run.py` |
 | Parameter sweep | `bench/sweep.py` | `./bench/sweep.py` |
 
+Related work lives in `~/AMDHQ` — this box's AMD/ROCm evaluation lab (`lab` CLI,
+`tools/`, `runs/` ledger, rocprofv3 captures). Its 2026-08-27 shortlist already
+recorded verdicts worth knowing before reaching for ROCm ecosystem pieces:
+**aiter/ATOM have no RDNA3 build path** (gfx942/gfx950 only), **hip-ep's autotune
+LUT is gfx1151-only**, and MIGraphX EP is already installed system-wide.
+
 `./run-tests.sh` builds the shim and checks an fp16 GEMM through the C ABI
 against a host reference. `./bench/run.py` gates on correctness *before*
 reporting throughput and exits non-zero if any variant is wrong.
@@ -161,8 +167,12 @@ Do not trust large-tile intuition on this card. Measure it.
 
 1. **Correctness first.** A fast wrong kernel is a failure. `bench/run.py`
    checks before it times.
-2. **One number, one commit.** Results are logged to `bench/log.jsonl` tagged
-   with the commit that produced them.
+2. **One number, one commit.** Results go to the **AMDHQ experiment ledger**
+   (`~/AMDHQ/runs/runs.jsonl` + `runs.sqlite`) under `role_key="mojo-baro-gemm"`,
+   tagged with the commit that produced them. That ledger is this box's existing
+   record of ROCm experiments — do not start a second one here. `bench/sweep.py`
+   keeps its own `sweep.jsonl` because a 198-point parameter search is search
+   output, not an experiment record.
 3. **Numeric parameter search belongs in `bench/sweep.py`,** not in a human or
    an agent. It is exact, free, and already beat a hand-tuned config by 1.38×.
 4. **New strategies go in their own file** (`kernels/matmul_<strategy>.mojo`) and

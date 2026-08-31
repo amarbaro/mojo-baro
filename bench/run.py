@@ -1,26 +1,35 @@
 #!/usr/bin/env python3
 """Build, run, and log the GEMM benchmarks.
 
-Every run appends to bench/log.jsonl with the commit it measured, so a number
-is always traceable to the code that produced it. Prints each variant against
-the best previously recorded result for the same shape.
+Results go into the AMDHQ experiment ledger (~/AMDHQ/runs/runs.jsonl +
+runs.sqlite), not a private log -- this box already has one record of ROCm
+experiments and a second would fragment it. Each run carries the commit it
+measured, so a number is always traceable to the code that produced it, and
+prints against the best previously recorded result for the same shape.
 """
 import json
 import pathlib
 import os
 import subprocess
 import sys
-import time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-LOG = ROOT / "bench" / "log.jsonl"
 BIN = ROOT / ".work" / "bench"
+AMDHQ = pathlib.Path("/home/mario/AMDHQ")
+
+sys.path.insert(0, str(AMDHQ))
+from tools.ledger import ExperimentLedger  # noqa: E402
+
+LEDGER = ExperimentLedger()
+LOG = pathlib.Path(LEDGER.jsonl_path)
 SHIM = ROOT / ".work" / "shim-build"
 
 
 # MAX's device pool otherwise claims ~90% of VRAM on DeviceContext creation.
 # At 100% hipBLASLt cannot allocate its handle and the process segfaults; the
 # cap costs nothing here and measured slightly faster.
+ROLE_KEY = "mojo-baro-gemm"
+
 ENV = {**os.environ}
 ENV.setdefault("MODULAR_DEVICE_CONTEXT_MEMORY_MANAGER_SIZE_PERCENT", "10")
 
@@ -44,9 +53,24 @@ def gpu_name():
 
 
 def history():
+    """Prior mojo-baro GEMM runs, flattened back to the shape the table wants."""
     if not LOG.exists():
         return []
-    return [json.loads(l) for l in LOG.read_text().splitlines() if l.strip()]
+    out = []
+    for line in LOG.read_text().splitlines():
+        if not line.strip():
+            continue
+        rec = json.loads(line)
+        if rec.get("role_key") != ROLE_KEY:
+            continue
+        cfg, met = rec.get("config", {}), rec.get("metrics", {})
+        out.append({
+            "variant": rec.get("backend", ""),
+            "m": cfg.get("m"), "n": cfg.get("n"), "k": cfg.get("k"),
+            "gflops": met.get("gflops"),
+            "correct": rec.get("status") == "SUCCESS",
+        })
+    return out
 
 
 def main():
@@ -66,19 +90,27 @@ def main():
         return 1
 
     prior = history()
-    sha, gpu, ts = commit(), gpu_name(), time.time()
+    sha, gpu = commit(), gpu_name()
     rows, failed = [], False
 
-    with LOG.open("a") as fh:
-        for line in run.stdout.splitlines():
-            line = line.strip()
-            if not line.startswith("{"):
-                continue
-            rec = json.loads(line)
-            rec.update(commit=sha, gpu=gpu, ts=ts)
-            fh.write(json.dumps(rec) + "\n")
-            rows.append(rec)
-            failed |= not rec["correct"]
+    for line in run.stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        rec = json.loads(line)
+        LEDGER.record_run(
+            target_node=gpu,
+            role_key=ROLE_KEY,
+            model_name=f"gemm-{rec['m']}x{rec['n']}x{rec['k']}-{rec['dtype']}",
+            backend=rec["variant"],
+            config={k: rec[k] for k in ("m", "n", "k", "iters", "tile", "dtype")},
+            metrics={"gflops": rec["gflops"], "ms": rec["ms"],
+                     "max_err": rec["max_err"]},
+            status="SUCCESS" if rec["correct"] else "FAIL",
+            notes=f"commit {sha}",
+        )
+        rows.append(rec)
+        failed |= not rec["correct"]
 
     print(f"{'variant':<10} {'ms':>9} {'GFLOP/s':>10} {'vs best':>9}  correct")
     for r in rows:
