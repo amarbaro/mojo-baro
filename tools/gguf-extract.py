@@ -78,6 +78,9 @@ def main():
         i = argv.index("--ref")
         ref_m = int(argv[i + 1])
         del argv[i : i + 2]
+    do_q8 = "--q8" in argv
+    if do_q8:
+        argv.remove("--q8")
     dump_meta = "--meta" in argv
     if dump_meta:
         argv.remove("--meta")
@@ -113,6 +116,24 @@ def main():
             (out_dir / f"{safe}.a.bin").write_bytes(a16.tobytes())
             (out_dir / f"{safe}.c.bin").write_bytes(c32.astype(np.float32).tobytes())
             meta[name]["ref_m"] = ref_m
+            if do_q8:
+                # Split-layout int8 blocks of 32: per-block fp32 scale.
+                assert in_f % 32 == 0
+                blocks = w32.reshape(out_f, in_f // 32, 32)
+                scale = np.abs(blocks).max(axis=2) / 127.0
+                scale[scale == 0] = 1.0
+                q = np.clip(np.rint(blocks / scale[:, :, None]), -127, 127)
+                q = q.astype(np.int8)
+                deq = q.astype(np.float32) * scale[:, :, None]
+                cq = a32t @ deq.reshape(out_f, in_f).T
+                (out_dir / f"{safe}.q.bin").write_bytes(q.tobytes())
+                (out_dir / f"{safe}.scales.bin").write_bytes(
+                    scale.astype(np.float32).tobytes()
+                )
+                (out_dir / f"{safe}.cq.bin").write_bytes(
+                    cq.astype(np.float32).tobytes()
+                )
+                meta[name]["q8"] = True
     (out_dir / "meta.json").write_text(json.dumps(meta, indent=1))
     print(json.dumps(meta, indent=1))
 
