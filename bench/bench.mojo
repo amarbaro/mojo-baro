@@ -11,7 +11,9 @@ from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext, HostBuffer
 from layout import TileTensor, row_major
 
-from matmul import matmul_naive, matmul_tiled, dtype, TILE
+from matmul import (
+    matmul_naive, matmul_tiled, matmul_regtile, dtype, TILE, BM, BN, TM, TN
+)
 
 comptime M = 512
 comptime N = 512
@@ -100,8 +102,32 @@ def main() raises:
     ctx.synchronize()
     var tiled_err = check(a_host, b_host, c_host)
 
+    # --- register-tiled ---
+    comptime regtile = matmul_regtile[
+        type_of(a_layout), type_of(b_layout), type_of(c_layout)
+    ]
+    comptime RGRID = (ceildiv(N, BN), ceildiv(M, BM))
+    comptime RBLOCK = (BN // TN, BM // TM)
+
+    for _ in range(WARMUP):
+        ctx.enqueue_function[regtile](
+            A, B, C, Int32(M), Int32(N), Int32(K), grid_dim=RGRID, block_dim=RBLOCK
+        )
+    ctx.synchronize()
+    t0 = perf_counter_ns()
+    for _ in range(ITERS):
+        ctx.enqueue_function[regtile](
+            A, B, C, Int32(M), Int32(N), Int32(K), grid_dim=RGRID, block_dim=RBLOCK
+        )
+    ctx.synchronize()
+    var reg_ms = Float64(perf_counter_ns() - t0) / 1.0e6 / Float64(ITERS)
+    ctx.enqueue_copy(dst_buf=c_host, src_buf=c_dev)
+    ctx.synchronize()
+    var reg_err = check(a_host, b_host, c_host)
+
     emit("naive", naive_ms, FLOPS / (naive_ms * 1.0e6), naive_err < 0.01, naive_err)
     emit("tiled", tiled_ms, FLOPS / (tiled_ms * 1.0e6), tiled_err < 0.01, tiled_err)
+    emit("regtile", reg_ms, FLOPS / (reg_ms * 1.0e6), reg_err < 0.01, reg_err)
 
 
 def check(a: HostBuffer[dtype], b: HostBuffer[dtype], c: HostBuffer[dtype]) -> Float64:
