@@ -14,6 +14,7 @@ import time
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 LOG = ROOT / "bench" / "log.jsonl"
 BIN = ROOT / ".work" / "bench"
+SHIM = ROOT / ".work" / "shim-build"
 
 
 def sh(*cmd, **kw):
@@ -44,6 +45,8 @@ def main():
     build = sh(
         str(ROOT / ".venv/bin/mojo"), "build", "bench/bench.mojo",
         "-o", str(BIN), "-I", "kernels",
+        "-Xlinker", f"-L{SHIM}", "-Xlinker", "-lbaro_shim",
+        "-Xlinker", "-rpath", "-Xlinker", str(SHIM),
     )
     if build.returncode:
         print(build.stderr, file=sys.stderr)

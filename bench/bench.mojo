@@ -11,6 +11,7 @@ from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext, HostBuffer
 from layout import TileTensor, row_major
 
+from baro import Baro
 from matmul import (
     matmul_naive, matmul_tiled, matmul_regtile, dtype, TILE, BM, BN, TM, TN
 )
@@ -125,6 +126,25 @@ def main() raises:
     ctx.synchronize()
     var reg_err = check(a_host, b_host, c_host)
 
+    # --- hipBLASLt vendor baseline, same device buffers ---
+    var baro = Baro()
+    var pa = Int(a_dev.unsafe_ptr())
+    var pb = Int(b_dev.unsafe_ptr())
+    var pc = Int(c_dev.unsafe_ptr())
+
+    for _ in range(WARMUP):
+        baro.gemm_f32(M, N, K, pa, pb, pc)
+    baro.sync()
+    t0 = perf_counter_ns()
+    for _ in range(ITERS):
+        baro.gemm_f32(M, N, K, pa, pb, pc)
+    baro.sync()
+    var lt_ms = Float64(perf_counter_ns() - t0) / 1.0e6 / Float64(ITERS)
+    ctx.enqueue_copy(dst_buf=c_host, src_buf=c_dev)
+    ctx.synchronize()
+    var lt_err = check(a_host, b_host, c_host)
+
+    emit("hipblaslt", lt_ms, FLOPS / (lt_ms * 1.0e6), lt_err < 0.01, lt_err)
     emit("naive", naive_ms, FLOPS / (naive_ms * 1.0e6), naive_err < 0.01, naive_err)
     emit("tiled", tiled_ms, FLOPS / (tiled_ms * 1.0e6), tiled_err < 0.01, tiled_err)
     emit("regtile", reg_ms, FLOPS / (reg_ms * 1.0e6), reg_err < 0.01, reg_err)

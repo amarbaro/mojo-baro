@@ -30,7 +30,9 @@ def patch(**vals):
 def measure():
     b = subprocess.run(
         [str(ROOT / ".venv/bin/mojo"), "build", "bench/bench.mojo",
-         "-o", str(ROOT / ".work/sweep_bin"), "-I", "kernels"],
+         "-o", str(ROOT / ".work/sweep_bin"), "-I", "kernels",
+         "-Xlinker", f"-L{ROOT / '.work/shim-build'}", "-Xlinker", "-lbaro_shim",
+         "-Xlinker", "-rpath", "-Xlinker", str(ROOT / ".work/shim-build")],
         cwd=ROOT, text=True, capture_output=True)
     if b.returncode:
         return None, "build failed"

@@ -41,6 +41,22 @@ struct Baro(Movable):
         if external_call["baro_download", Int32](self._ctx, dst, src, bytes) != 0:
             raise Error("download failed: ", Self.last_error())
 
+    def sync(self) raises:
+        if external_call["baro_sync", Int32](self._ctx) != 0:
+            raise Error("sync failed: ", Self.last_error())
+
+    def gemm_f32(
+        self, m: Int, n: Int, k: Int, a: Int, b: Int, c: Int,
+        alpha: Float32 = 1.0, beta: Float32 = 0.0,
+    ) raises:
+        """Vendor fp32 GEMM. Pointers are raw device addresses; they may come
+        from this shim or from a MAX DeviceBuffer via unsafe_ptr()."""
+        var rc = external_call["baro_gemm_f32", Int32](
+            self._ctx, Int32(m), Int32(n), Int32(k), a, b, c, alpha, beta
+        )
+        if rc != 0:
+            raise Error("gemm_f32 failed: ", Self.last_error())
+
     def gemm_f16(
         self, m: Int, n: Int, k: Int, a: Int, b: Int, c: Int,
         alpha: Float32 = 1.0, beta: Float32 = 0.0,

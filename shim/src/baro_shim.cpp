@@ -21,6 +21,16 @@ struct baro_ctx {
   hipStream_t stream;
   hipblasLtHandle_t lt;
   int device_id;
+  /* Workspace and algorithm selection are cached across calls. Doing the
+     heuristic lookup and a hipMalloc per call costs more than the GEMM at
+     these sizes and made hipBLASLt benchmark below a naive kernel. */
+  void *workspace;
+  size_t workspace_size;
+  bool have_algo;
+  hipblasLtMatmulAlgo_t algo;
+  size_t algo_ws;
+  int cached_m, cached_n, cached_k;
+  hipDataType cached_dt;
 };
 
 extern "C" baro_ctx *baro_init(int device_id) {
@@ -32,6 +42,13 @@ extern "C" baro_ctx *baro_init(int device_id) {
   ctx->device_id = device_id;
   if (hipStreamCreate(&ctx->stream) != hipSuccess) {
     set_error("hipStreamCreate failed");
+    delete ctx;
+    return nullptr;
+  }
+  ctx->workspace_size = 32 * 1024 * 1024;
+  if (hipMalloc(&ctx->workspace, ctx->workspace_size) != hipSuccess) {
+    set_error("workspace hipMalloc failed");
+    (void)hipStreamDestroy(ctx->stream);
     delete ctx;
     return nullptr;
   }
@@ -47,14 +64,16 @@ extern "C" baro_ctx *baro_init(int device_id) {
 extern "C" void baro_destroy(baro_ctx *ctx) {
   if (!ctx)
     return;
+  if (ctx->workspace)
+    (void)hipFree(ctx->workspace);
   hipblasLtDestroy(ctx->lt);
   (void)hipStreamDestroy(ctx->stream);
   delete ctx;
 }
 
-extern "C" int baro_gemm_f16(baro_ctx *ctx, int m, int n, int k,
-                             const void *a, const void *b, void *c,
-                             float alpha, float beta) {
+namespace {
+int gemm_impl(baro_ctx *ctx, int m, int n, int k, const void *a, const void *b,
+              void *c, float alpha, float beta, hipDataType dt) {
   if (!ctx || !a || !b || !c) {
     set_error("null argument");
     return -1;
@@ -73,11 +92,11 @@ extern "C" int baro_gemm_f16(baro_ctx *ctx, int m, int n, int k,
     if (la) hipblasLtMatrixLayoutDestroy(la);
   };
 
-  if (hipblasLtMatrixLayoutCreate(&lb, HIP_R_16F, n, k, n) !=
+  if (hipblasLtMatrixLayoutCreate(&lb, dt, n, k, n) !=
           HIPBLAS_STATUS_SUCCESS ||
-      hipblasLtMatrixLayoutCreate(&la, HIP_R_16F, k, m, k) !=
+      hipblasLtMatrixLayoutCreate(&la, dt, k, m, k) !=
           HIPBLAS_STATUS_SUCCESS ||
-      hipblasLtMatrixLayoutCreate(&lc, HIP_R_16F, n, m, n) !=
+      hipblasLtMatrixLayoutCreate(&lc, dt, n, m, n) !=
           HIPBLAS_STATUS_SUCCESS) {
     set_error("hipblasLtMatrixLayoutCreate failed");
     cleanup();
@@ -97,48 +116,60 @@ extern "C" int baro_gemm_f16(baro_ctx *ctx, int m, int n, int k,
   hipblasLtMatmulDescSetAttribute(desc, HIPBLASLT_MATMUL_DESC_TRANSB, &op,
                                   sizeof(op));
 
-  hipblasLtMatmulPreference_t pref = nullptr;
-  if (hipblasLtMatmulPreferenceCreate(&pref) != HIPBLAS_STATUS_SUCCESS) {
-    set_error("hipblasLtMatmulPreferenceCreate failed");
-    cleanup();
-    return rc;
-  }
-  const uint64_t workspace_size = 32 * 1024 * 1024;
-  hipblasLtMatmulPreferenceSetAttribute(
-      pref, HIPBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &workspace_size,
-      sizeof(workspace_size));
+  const bool shape_changed = !ctx->have_algo || ctx->cached_m != m ||
+                             ctx->cached_n != n || ctx->cached_k != k ||
+                             ctx->cached_dt != dt;
+  if (shape_changed) {
+    hipblasLtMatmulPreference_t pref = nullptr;
+    if (hipblasLtMatmulPreferenceCreate(&pref) != HIPBLAS_STATUS_SUCCESS) {
+      set_error("hipblasLtMatmulPreferenceCreate failed");
+      cleanup();
+      return rc;
+    }
+    hipblasLtMatmulPreferenceSetAttribute(
+        pref, HIPBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &ctx->workspace_size,
+        sizeof(ctx->workspace_size));
 
-  hipblasLtMatmulHeuristicResult_t heuristic{};
-  int returned = 0;
-  auto hs = hipblasLtMatmulAlgoGetHeuristic(ctx->lt, desc, lb, la, lc, lc, pref,
-                                            1, &heuristic, &returned);
-  hipblasLtMatmulPreferenceDestroy(pref);
-  if (hs != HIPBLAS_STATUS_SUCCESS || returned == 0) {
-    set_error("no hipBLASLt algorithm for this problem shape");
-    cleanup();
-    return rc;
-  }
-
-  void *workspace = nullptr;
-  if (heuristic.workspaceSize &&
-      hipMalloc(&workspace, heuristic.workspaceSize) != hipSuccess) {
-    set_error("workspace hipMalloc failed");
-    cleanup();
-    return rc;
+    hipblasLtMatmulHeuristicResult_t heuristic{};
+    int returned = 0;
+    auto hs = hipblasLtMatmulAlgoGetHeuristic(ctx->lt, desc, lb, la, lc, lc,
+                                              pref, 1, &heuristic, &returned);
+    hipblasLtMatmulPreferenceDestroy(pref);
+    if (hs != HIPBLAS_STATUS_SUCCESS || returned == 0) {
+      set_error("no hipBLASLt algorithm for this problem shape");
+      cleanup();
+      return rc;
+    }
+    ctx->algo = heuristic.algo;
+    ctx->algo_ws = heuristic.workspaceSize;
+    ctx->cached_m = m;
+    ctx->cached_n = n;
+    ctx->cached_k = k;
+    ctx->cached_dt = dt;
+    ctx->have_algo = true;
   }
 
   if (hipblasLtMatmul(ctx->lt, desc, &alpha, b, lb, a, la, &beta, c, lc, c, lc,
-                      &heuristic.algo, workspace, heuristic.workspaceSize,
+                      &ctx->algo, ctx->workspace, ctx->algo_ws,
                       ctx->stream) != HIPBLAS_STATUS_SUCCESS) {
     set_error("hipblasLtMatmul failed");
   } else {
     rc = 0;
   }
 
-  if (workspace)
-    (void)hipFree(workspace);
   cleanup();
   return rc;
+}
+} // namespace
+
+extern "C" int baro_gemm_f16(baro_ctx *ctx, int m, int n, int k, const void *a,
+                             const void *b, void *c, float alpha, float beta) {
+  return gemm_impl(ctx, m, n, k, a, b, c, alpha, beta, HIP_R_16F);
+}
+
+extern "C" int baro_gemm_f32(baro_ctx *ctx, int m, int n, int k, const void *a,
+                             const void *b, void *c, float alpha, float beta) {
+  return gemm_impl(ctx, m, n, k, a, b, c, alpha, beta, HIP_R_32F);
 }
 
 extern "C" void *baro_device_alloc(size_t bytes) {

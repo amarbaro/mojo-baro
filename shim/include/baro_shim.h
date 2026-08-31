@@ -17,6 +17,10 @@ void baro_destroy(baro_ctx *ctx);
 int baro_gemm_f16(baro_ctx *ctx, int m, int n, int k, const void *a,
                   const void *b, void *c, float alpha, float beta);
 
+/* Same, fp32 in / fp32 accum. Used as the vendor baseline in benchmarks. */
+int baro_gemm_f32(baro_ctx *ctx, int m, int n, int k, const void *a,
+                  const void *b, void *c, float alpha, float beta);
+
 /* Device memory. baro_upload/baro_download are synchronous on ctx's stream. */
 void *baro_device_alloc(size_t bytes);
 void baro_device_free(void *ptr);
