@@ -1,0 +1,6 @@
+.venv/
+.work/
+target/
+build/
+__pycache__/
+*.so
