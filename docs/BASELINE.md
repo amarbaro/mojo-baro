@@ -162,6 +162,34 @@ At 100% there is nothing left for hipBLASLt to allocate its handle and the
 process dies. Capping costs no throughput — it measured slightly *faster*.
 This is the constraint on co-tenancy: uncapped, one MAX process owns the card.
 
+**fp32 WMMA does not exist on gfx1100 — it is the ISA, not Mojo.** Verified
+three ways: `llvm-mc -mcpu=gfx1100` accepts `v_wmma_f32_16x16x16_f16` and
+rejects `..._f32`; `BuiltinsAMDGPU.def` has zero f32-input WMMA entries; and
+Mojo's own constraint reads *"RDNA WMMA does not support FP32 inputs (only
+FP16/BF16 -> FP32)"*. **Any fp16 TFLOPS figure (aiter's ~82–89) is therefore not
+comparable to this fp32 benchmark** — they use different hardware inside the
+same chip.
+
+**fp16 WMMA in Mojo works, and the fragment shape is the trap.** RDNA3 wave32
+wants **a/b = 16 wide, c/d = 8 wide** (matching
+`__builtin_amdgcn_wmma_f32_16x16x16_f16_w32` typed `V8fV16hV16hV8f`). The
+8-wide fragments `TensorCore.load_a` builds are the CDNA/NVIDIA shape and fail
+with *"no valid implementation of mma"*. Measured lane mapping:
+
+```
+A: lane L, elem i(0..15) -> A[L % 16][i]
+B: lane L, elem i(0..15) -> B[i][L % 16]
+D: lane L, elem i(0..7)  -> D[2*i + L // 16][L % 16]
+```
+
+D is not the obvious layout — consecutive `i` steps two rows and the half-waves
+interleave. Verified 16×16×16 tile: 0 mismatches, max_err 5.96e-07. Working
+probes in `.work/wmma/`. Also: `get_mma_shape` has **no working RDNA entry** for
+any dtype/shape_id — pass `Index(16,16,16)` to `TensorCore` explicitly. And the
+whole `TensorCore` surface takes `LayoutTensor` (built via `Layout.row_major`),
+which does not unify with the `TileTensor` our kernels use; calling `mma`
+directly with hand-built fragments avoids both problems.
+
 **gfx1100 is thinly tuned in hipBLASLt.** 8 fp32 (`SS_SS`) Tensile libraries vs
 134 for gfx942; 95 total gfx1100 files vs 1111. The fp32 heuristic offers only
 **4** candidate algorithms at any size. This is the contribution opportunity.
