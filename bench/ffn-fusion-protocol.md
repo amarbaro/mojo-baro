@@ -37,3 +37,26 @@ grouping unchanged, so bit-exact.
 | F2 | ssm+attn sub-block GEMM time -30..-40% => decode -12..-16% => **+13% to +19%** (41.7 -> 47..50) | 64/64 AND median of 3 >= +5% |
 
 ### F2 receipt: NOT landed. F1 41.85/41.81/41.83 vs F2 41.72/41.77/41.77 (0.998x), 64/64, ssm/attn shares unchanged (28.2% / 9.3%). 64 blocks of 256 threads already saturate HBM for a 33 MB stream; the ssm sub-block's missing half is in its non-GEMM kernels. Next: per-launch profile inside the ssm sub-block.
+
+## F3 (frozen 2026-09-02 after F2): fuse the ssm qf and h projections into one launch
+
+BARO_PROFILE=2: ssm projections+reduces = 56% of ssm time at ~500 GB/s; the
+ffn's 100 MB streams reach 770. Same activation row feeds qf (N=8192) and h
+(N=4096); `amar_matmul_skinny_m1_dual` gains a second N so the two streams
+share one launch (blocks past N2 skip the second stream). Bit-exact.
+
+| step | prediction (tok/s_gen) | land rule |
+|---|---|---|
+| F3 | +3% to +6% (41.8 -> 43..44) | 64/64 AND median of 3 >= +2% |
+
+### F3 receipt: NOT landed. F1 41.79/41.68/41.90 vs F3 42.13/42.17/42.13 (+0.8%), 64/64. Below the +3% prediction floor and the +2% land rule.
+
+## Conclusion of the bit-exact fusion series (2026-09-02)
+
+Three preregistered fusions, one landed at +1.0%, two measured +0.8% and
+-0.2%. Launch count and block count are not where the ~20% to the HBM roof
+lives; it is spread over ~90 launches as per-launch ramp/tail and over the
+five launch-floor kernels in each ssm layer. The remaining bit-exact lever is
+structural: a persistent per-token megakernel (one launch, grid-wide sync
+between stages). XL. The bytes lever (q8 weights) is the only other 2x and is
+not bit-exact.
