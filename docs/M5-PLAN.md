@@ -24,7 +24,7 @@ before touching anything. Board: `~/Brain/mojo-baro/whiteboard.md`.
 
 ## GPU sharing discipline (llama-server owns 22 GB VRAM)
 
-- Server: PID via `pgrep -af '^/home/mario/llama.cpp'`, local port per
+- Server: PID via `pgrep -af '^~/llama.cpp'`, local port per
   `~/Brain/OS/local-service-ports.md` ("Local LLM (llama.cpp)" entry).
 - The full restart command line is preserved byte-exact in
   `~/Brain/mojo-baro/llama-server-cmdline.txt` — restore from there only.

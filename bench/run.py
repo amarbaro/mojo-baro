@@ -15,13 +15,21 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BIN = ROOT / ".work" / "bench"
-AMDHQ = pathlib.Path("/home/mario/AMDHQ")
+# The AMDHQ experiment ledger is this box's private run archive. It is optional:
+# without it the benchmark still gates on correctness and prints its table, it
+# just does not persist the run or show history.
+AMDHQ = pathlib.Path(os.environ.get("AMDHQ_ROOT", "~/AMDHQ")).expanduser()
 
-sys.path.insert(0, str(AMDHQ))
-from tools.ledger import ExperimentLedger  # noqa: E402
-
-LEDGER = ExperimentLedger()
-LOG = pathlib.Path(LEDGER.jsonl_path)
+LEDGER = None
+LOG = None
+if AMDHQ.is_dir():
+    sys.path.insert(0, str(AMDHQ))
+    try:
+        from tools.ledger import ExperimentLedger  # noqa: E402
+        LEDGER = ExperimentLedger()
+        LOG = pathlib.Path(LEDGER.jsonl_path)
+    except ImportError:
+        pass
 SHIM = ROOT / ".work" / "shim-build"
 
 
@@ -54,7 +62,7 @@ def gpu_name():
 
 def history():
     """Prior mojo-baro GEMM runs, flattened back to the shape the table wants."""
-    if not LOG.exists():
+    if LOG is None or not LOG.exists():
         return []
     out = []
     for line in LOG.read_text().splitlines():
@@ -99,17 +107,18 @@ def main():
         if not line.startswith("{"):
             continue
         rec = json.loads(line)
-        LEDGER.record_run(
-            target_node=gpu,
-            role_key=ROLE_KEY,
-            model_name=f"gemm-{rec['m']}x{rec['n']}x{rec['k']}-{rec['dtype']}",
-            backend=rec["variant"],
-            config={k: rec[k] for k in ("m", "n", "k", "iters", "tile", "dtype")},
-            metrics={"gflops": rec["gflops"], "ms": rec["ms"],
-                     "max_err": rec["max_err"]},
-            status="SUCCESS" if rec["correct"] else "FAIL",
-            notes=f"commit {sha}",
-        )
+        if LEDGER is not None:
+            LEDGER.record_run(
+                target_node=gpu,
+                role_key=ROLE_KEY,
+                model_name=f"gemm-{rec['m']}x{rec['n']}x{rec['k']}-{rec['dtype']}",
+                backend=rec["variant"],
+                config={k: rec[k] for k in ("m", "n", "k", "iters", "tile", "dtype")},
+                metrics={"gflops": rec["gflops"], "ms": rec["ms"],
+                         "max_err": rec["max_err"]},
+                status="SUCCESS" if rec["correct"] else "FAIL",
+                notes=f"commit {sha}",
+            )
         rows.append(rec)
         failed |= not rec["correct"]
 

@@ -77,7 +77,7 @@ same denominator convention?
 
 **Why re-register**: `timings.predicted_per_second` is
 `n_gen_steps() / t_gen_ms()` (verified
-`/home/mario/llama.cpp/tools/server/server-common.h:404-427`):
+`~/llama.cpp/tools/server/server-common.h:404-427`):
 `n_gen_steps() = n_gen - 1` (first token free, logits already came
 from the last prompt batch) and `t_gen_ms()` excludes prompt eval
 (`t_gen_last - t_prompt_last`). Our engine's clock (`serve/engine.mojo`)

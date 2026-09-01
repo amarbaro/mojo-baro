@@ -1,10 +1,10 @@
 # qwen35 SSM (gated-delta-net) block — exact per-token decode math
 
-Source: `/home/mario/llama.cpp/src/models/qwen35.cpp` (`build_layer_attn_linear`,
-`build_qkvz`, `build_norm_gated`) + `/home/mario/llama.cpp/src/models/delta-net-base.cpp`
+Source: `~/llama.cpp/src/models/qwen35.cpp` (`build_layer_attn_linear`,
+`build_qkvz`, `build_norm_gated`) + `~/llama.cpp/src/models/delta-net-base.cpp`
 (`build_conv_state`, `build_recurrent_attn`, `build_delta_net_autoregressive`) +
 `ggml_compute_forward_ssm_conv_f32` in
-`/home/mario/llama.cpp/ggml/src/ggml-cpu/ops.cpp:9564`. Re-verified against
+`~/llama.cpp/ggml/src/ggml-cpu/ops.cpp:9564`. Re-verified against
 source on 2026-09-01 (llama.cpp local checkout, no upstream fetch).
 
 Dims (hidden=4096, from stated metadata): S=state_size=128, n_k_heads=group_count=16,
@@ -137,12 +137,12 @@ layer does NOT carry `ssm_*` tensors, and an SSM layer does NOT carry `wq/wk/wv`
 
 ## 7b. Full-attention block — verified details
 
-Source: `/home/mario/llama.cpp/src/models/qwen35.cpp` `build_layer_attn` (lines 258-337),
-`ggml_rope_multi` impl in `/home/mario/llama.cpp/ggml/src/ggml-cpu/ops.cpp`
+Source: `~/llama.cpp/src/models/qwen35.cpp` `build_layer_attn` (lines 258-337),
+`ggml_rope_multi` impl in `~/llama.cpp/ggml/src/ggml-cpu/ops.cpp`
 (`ggml_mrope_cache_init` 5858-5926, `amar_rope_yarn` 5825-5840, dispatch ~5995-6100),
-YaRN corr-dims in `/home/mario/llama.cpp/ggml/src/ggml.c` (`ggml_rope_yarn_corr_dim`
+YaRN corr-dims in `~/llama.cpp/ggml/src/ggml.c` (`ggml_rope_yarn_corr_dim`
 4406-4408, `ggml_rope_yarn_corr_dims` 4410-4418), hparams loading in
-`/home/mario/llama.cpp/src/llama-model.cpp` (n_rot/key_length ~1326-1343, rope type
+`~/llama.cpp/src/llama-model.cpp` (n_rot/key_length ~1326-1343, rope type
 switch ~2951-2955, rope_freq_scale_train ~1301-1319).
 
 **§7 was wrong on head_dim: it's 256, not 128.** `hparams.n_embd_head_k_full` /
@@ -275,7 +275,7 @@ ssm.inner_size=4096, full_attention_interval=4 (every 4th layer, 1-indexed, is f
 
 **Q1 — v-head→k/q-head index mapping (delta-net path).**
 
-Call site: `/home/mario/llama.cpp/src/models/qwen35.cpp:443-444` —
+Call site: `~/llama.cpp/src/models/qwen35.cpp:443-444` —
 `q_conv = ggml_repeat_4d(ctx0, q_conv, head_k_dim, num_v_heads, n_seq_tokens, n_seqs);`
 (same for `k_conv`, line 444). Source `q_conv`/`k_conv` shape before the call:
 `[head_k_dim, num_k_heads=16, n_seq_tokens, n_seqs]` (view at
@@ -283,7 +283,7 @@ Call site: `/home/mario/llama.cpp/src/models/qwen35.cpp:443-444` —
 — i.e. **ne1 (head dim) is the repeated dim, 16→32, nr1=2.**
 
 `ggml_compute_forward_repeat_f32` semantics
-(`/home/mario/llama.cpp/ggml/src/ggml-cpu/ops.cpp:1696-1740`): nested loop is
+(`~/llama.cpp/ggml/src/ggml-cpu/ops.cpp:1696-1740`): nested loop is
 `for i1 in 0..nr1: for k1 in 0..ne01: dst[i1*ne01+k1] = src[k1]` (ops.cpp:1727-1732).
 This is **block/tile repeat, not element-wise repeat**: for nr1=2, ne01=16, dst
 index range 0..15 (i1=0) copies src 0..15, then dst index range 16..31 (i1=1)
@@ -304,11 +304,11 @@ qwen35's mapping above.)
 **Full-attention block GQA (16 q-heads, 4 kv-heads) — separate mechanism,
 confirmed grouped (`h // 4`), NOT the tile mapping above.**
 
-`llm_graph_context::build_attn_mha` (`/home/mario/llama.cpp/src/llama-graph.cpp:2541-2607`,
+`llm_graph_context::build_attn_mha` (`~/llama.cpp/src/llama-graph.cpp:2541-2607`,
 non-flash branch) does `ggml_mul_mat(ctx0, k, q)` directly — no `ggml_repeat_4d`
 call for the KV heads at all. Broadcast is handled inside
 `ggml_compute_forward_mul_mat_one_chunk`
-(`/home/mario/llama.cpp/ggml/src/ggml-cpu/ops.cpp:1184-1186`):
+(`~/llama.cpp/ggml/src/ggml-cpu/ops.cpp:1184-1186`):
 `r2 = ne12/ne02` (`ne12`=n_head from q/src1, `ne02`=n_head_kv from k/src0), and
 the row index used is `i02 = i12 / r2` (floor division; confirmed by the
 mul_mat broadcast convention throughout ggml-cpu, `i1x/r2`-style indexing).
@@ -320,11 +320,11 @@ full-attention mul_mat broadcast groups (floor-div) — do not assume they match
 
 **Q2 — YaRN `rope_ext_factor`/`rope_attn_factor` defaulting for qwen35.**
 
-GGUF hparam load (`/home/mario/llama.cpp/src/llama-model.cpp:1307-1322`):
+GGUF hparam load (`~/llama.cpp/src/llama-model.cpp:1307-1322`):
 - `rope_scaling.type` read as string, defaults `"linear"` if absent
   (line 1307-1309).
 - `hparams.rope_attn_factor` (field default `1.0f`,
-  `/home/mario/llama.cpp/src/llama-hparams.h:138`) is read from GGUF key
+  `~/llama.cpp/src/llama-hparams.h:138`) is read from GGUF key
   `LLM_KV_ROPE_SCALING_ATTN_FACTOR` with `required=false`
   (`llama-model.cpp:1321`) — **if the GGUF carries no
   `rope.scaling.attn_factor` key (qwen35's case), it stays at the struct
@@ -335,7 +335,7 @@ GGUF hparam load (`/home/mario/llama.cpp/src/llama-model.cpp:1307-1322`):
   `rope_attn_factor` and are NOT loaded from GGUF metadata; they live on
   `llama_context_params` / `cparams`, resolved at context-creation time.
 
-Resolution logic (`/home/mario/llama.cpp/src/llama-context.cpp`):
+Resolution logic (`~/llama.cpp/src/llama-context.cpp`):
 - `cparams.yarn_ext_factor = params.yarn_ext_factor >= 0.0f ? params.yarn_ext_factor : hparams.yarn_ext_factor;` (line 113) — since `hparams.yarn_ext_factor` itself is never set from GGUF (no such field/key), it stays at its own default; the effective "unset" sentinel is `< 0.0f`.
 - `cparams.yarn_attn_factor` same pattern (line 114), falling back to `hparams.yarn_attn_factor = 1.0f`.
 - **The exact style logic requested:** `llama-context.cpp:172-173` —
@@ -353,7 +353,7 @@ Resolution logic (`/home/mario/llama.cpp/src/llama-context.cpp`):
   whenever `ext_factor != 0` (true for qwen35 since `rope_scaling_type==YARN`).
 
 **Attention softmax scale (`kq_scale`) for qwen35 full-attention blocks:**
-`/home/mario/llama.cpp/src/models/qwen35.cpp:320` and `:595-596` —
+`~/llama.cpp/src/models/qwen35.cpp:320` and `:595-596` —
 ```
 const float kq_scale = hparams.f_attention_scale == 0.0f
         ? 1.0f / sqrtf(float(n_embd_head)) : hparams.f_attention_scale;

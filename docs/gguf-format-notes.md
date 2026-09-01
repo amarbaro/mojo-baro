@@ -1,7 +1,7 @@
 # GGUF format notes (v3) — minimal-reader reference
 
 Source: github.com/ggml-org/ggml/blob/master/docs/gguf.md (GGUF v3 spec).
-Verified against `/home/mario/Models/qwythos-9b-claude-mythos-5-1m-mtp-bf16/Qwythos-9B-Claude-Mythos-5-1M-MTP-BF16.gguf`.
+Verified against `~/Models/qwythos-9b-claude-mythos-5-1m-mtp-bf16/Qwythos-9B-Claude-Mythos-5-1M-MTP-BF16.gguf`.
 
 ## 1. Header layout
 

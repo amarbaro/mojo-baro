@@ -26,7 +26,7 @@ and step 7): `token_embd.weight` for the token-embedding lookup, and
 `output.weight` for the final logits matmul.
 
 qwen35.cpp line references cited throughout are from mtp-notes.md, which was
-generated against /home/mario/llama.cpp's src/models/qwen35.cpp.
+generated against ~/llama.cpp's src/models/qwen35.cpp.
 """
 import sys
 from pathlib import Path
@@ -45,7 +45,7 @@ gguf_parse = _gguf_extract.parse
 GGML_BYTES = _gguf_extract.GGML_BYTES
 
 DEFAULT_MODEL = (
-    "/home/mario/Models/qwythos-9b-claude-mythos-5-1m-mtp-bf16/"
+    "~/Models/qwythos-9b-claude-mythos-5-1m-mtp-bf16/"
     "Qwythos-9B-Claude-Mythos-5-1M-MTP-BF16.gguf"
 )
 

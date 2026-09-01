@@ -3,7 +3,7 @@
 Model: `Qwythos-9B-Claude-Mythos-5-1M-MTP-BF16.gguf`, `general.architecture = qwen35`
 (`qwen35.block_count = 33`, `qwen35.nextn_predict_layers = 1` → layers 0-31 are the
 main trunk, layer 32 (`blk.32`) is the single NextN/MTP draft block).
-Reference tree: `/home/mario/llama.cpp` (arch dispatch `src/models/qwen35.cpp`;
+Reference tree: `~/llama.cpp` (arch dispatch `src/models/qwen35.cpp`;
 the MoE sibling `src/models/qwen3next.cpp` is structurally identical but not
 what this model uses — this model's FFN and blk.32 FFN are dense, not MoE).
 
