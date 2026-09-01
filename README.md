@@ -16,8 +16,8 @@ resident in Infinity Cache.
 
 | kernel | µs/launch (10 repeats) |
 |---|---|
-| `matmul_skinny_v2` CPT=8 @ M=1 | 137.8 – 138.9 |
-| **`matmul_skinny_m1` CPT=8** | **121.2 – 121.8** |
+| `amar_matmul_skinny_v2` CPT=8 @ M=1 | 137.8 – 138.9 |
+| **`amar_matmul_skinny_m1` CPT=8** | **121.2 – 121.8** |
 | hipBLASLt f16 @ M=1 | 122.1 – 123.3 |
 
 The `m1` range sits strictly below the vendor's — margin ~1%, ranges disjoint.

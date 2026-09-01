@@ -30,7 +30,7 @@ TARGETS = {
         out=ROOT / "bench" / "sweep.jsonl",
     ),
     "wmma": dict(
-        src=ROOT / "kernels" / "matmul_wmma_lds.mojo",
+        src=ROOT / "kernels" / "amar_matmul_wmma_lds.mojo",
         bench="bench/bench_fp16.mojo",
         variant="wmma_lds_fp16",
         out=ROOT / "bench" / "sweep-wmma.jsonl",

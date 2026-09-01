@@ -41,12 +41,12 @@ before touching anything. Board: `~/Brain/mojo-baro/whiteboard.md`.
    commit) — every perf claim in this repo is preregistered or it is noise.
 2. **Launch-count reduction** (biggest lever, target ~2x): the engine issues
    ~20 launches/layer at M=1. Fuse: reduce+cast pairs, gates_k into the
-   alpha/beta reduce, rmsnorm+cast, split/norm/rope chains. Consider one
+   alpha/beta reduce, amar_rmsnorm+cast, split/norm/rope chains. Consider one
    fused "layer prologue" and "layer epilogue" kernel. Keep each fusion
    behind the token-identity gate.
 3. **Prefill batching**: process the prompt with M=n_prompt GEMMs (skinny
    handles M<=8; batch larger prompts in chunks of 8). Attention prefill
-   needs a causal-mask variant of attn_decode.
+   needs a causal-mask variant of amar_attn_decode.
 4. **q8b weight path** end-to-end (kernels exist, parity 9.2e-4): halves the
    bandwidth ceiling (~50 -> ~100 tok/s roof). Quantize the pack, add a
    `--q8` engine mode. Token identity may legitimately drift under quant —

@@ -1,9 +1,9 @@
 """Register-tiled GEMM with a transposed A tile in shared memory.
 
-Same blocking as `matmul_regtile` (BM32 BN32 BK8 TM2 TN2) so the only variable
+Same blocking as `amar_matmul_regtile` (BM32 BN32 BK8 TM2 TN2) so the only variable
 is the shared-memory layout of A.
 
-In `matmul_regtile`, A's tile is `sa[BM][BK]` and the inner loop reads
+In `amar_matmul_regtile`, A's tile is `sa[BM][BK]` and the inner loop reads
 `sa[ty * TM + i, k]` for i in 0..TM: those TM values are BK apart, so each one
 costs its own scalar LDS read.  B's tile is already read contiguously.  With
 TM = TN = 2 that is 4 LDS reads feeding 4 FMAs -- a 1:1 ratio against a VALU
@@ -37,7 +37,7 @@ comptime NTHREADS = (BM // TM) * (BN // TN)  # 256
 comptime LDS_PAD = 2
 
 
-def matmul_ldst[
+def amar_matmul_ldst[
     ALayout: TensorLayout, BLayout: TensorLayout, CLayout: TensorLayout
 ](
     A: TileTensor[dtype, ALayout, MutAnyOrigin],

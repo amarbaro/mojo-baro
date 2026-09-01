@@ -10,7 +10,7 @@ comptime EW_THREADS = 256
 comptime f32 = DType.float32
 
 
-def rmsnorm[
+def amar_rmsnorm[
     XLayout: TensorLayout, GLayout: TensorLayout, OLayout: TensorLayout
 ](
     X: TileTensor[f32, XLayout, MutAnyOrigin],
@@ -54,7 +54,7 @@ def rmsnorm[
         i += EW_THREADS
 
 
-def rmsnorm_cast[
+def amar_rmsnorm_cast[
     XLayout: TensorLayout, GLayout: TensorLayout, OLayout: TensorLayout
 ](
     X: TileTensor[f32, XLayout, MutAnyOrigin],
@@ -100,7 +100,7 @@ def rmsnorm_cast[
         i += EW_THREADS
 
 
-def swiglu[
+def amar_swiglu[
     GLayout: TensorLayout, ULayout: TensorLayout, OLayout: TensorLayout
 ](
     Gate: TileTensor[f32, GLayout, MutAnyOrigin],
@@ -119,7 +119,7 @@ def swiglu[
     O[idx] = rebind[O.ElementType](silu * u)
 
 
-def rope_rows[
+def amar_rope_rows[
     XLayout: TensorLayout
 ](
     X: TileTensor[f32, XLayout, MutAnyOrigin],
@@ -151,7 +151,7 @@ def rope_rows[
         idx += block_dim.x
 
 
-def softmax_rows[
+def amar_softmax_rows[
     XLayout: TensorLayout
 ](
     X: TileTensor[f32, XLayout, MutAnyOrigin],
@@ -207,7 +207,7 @@ def softmax_rows[
         i += EW_THREADS
 
 
-def embed_lookup[
+def amar_embed_lookup[
     TLayout: TensorLayout, OLayout: TensorLayout
 ](
     Table: TileTensor[DType.bfloat16, TLayout, MutAnyOrigin],
@@ -225,7 +225,7 @@ def embed_lookup[
     )
 
 
-def embed_lookup_pos[
+def amar_embed_lookup_pos[
     TLayout: TensorLayout, OLayout: TensorLayout, KLayout: TensorLayout
 ](
     Table: TileTensor[DType.bfloat16, TLayout, MutAnyOrigin],
@@ -245,7 +245,7 @@ def embed_lookup_pos[
     )
 
 
-def argmax_pos[
+def amar_argmax_pos[
     XLayout: TensorLayout, OLayout: TensorLayout
 ](
     X: TileTensor[f32, XLayout, MutAnyOrigin],
@@ -291,7 +291,7 @@ def argmax_pos[
         Out[Int(wpos) + Int(row)] = rebind[Out.ElementType](bi)
 
 
-def argmax_row[
+def amar_argmax_row[
     XLayout: TensorLayout, OLayout: TensorLayout
 ](
     X: TileTensor[f32, XLayout, MutAnyOrigin],
@@ -334,3 +334,19 @@ def argmax_row[
                 bv = v
                 bi = ix
         Out[row] = rebind[Out.ElementType](bi)
+
+
+def amar_tok_copy[
+    SLayout: TensorLayout, DLayout: TensorLayout
+](
+    Src: TileTensor[DType.int32, SLayout, MutAnyOrigin],
+    Dst: TileTensor[DType.int32, DLayout, MutAnyOrigin],
+    si: Int32,
+    di: Int32,
+    n: Int32,
+):
+    comptime assert Src.flat_rank == 1 and Dst.flat_rank == 1
+    var i = global_idx.x
+    if i >= Int(n):
+        return
+    Dst[Int(di) + i] = rebind[Dst.ElementType](Src[Int(si) + i])

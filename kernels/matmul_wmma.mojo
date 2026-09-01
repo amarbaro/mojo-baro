@@ -32,7 +32,7 @@ comptime WARP_TILES_M = 2
 comptime WARP_TILES_N = 2
 
 
-def matmul_wmma[
+def amar_matmul_wmma[
     ALayout: TensorLayout, BLayout: TensorLayout, CLayout: TensorLayout
 ](
     A: TileTensor[DType.float16, ALayout, MutAnyOrigin],

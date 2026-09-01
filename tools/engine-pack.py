@@ -4,7 +4,8 @@
 2D bf16 weights are stored TRANSPOSED (B-layout [in, out]) for the skinny
 GEMM; f32 tensors (norms, conv, ssm scalars) as-is. Emits, per line:
   name dtype offset_bytes n_elem
-in a fixed, engine-known order. MTP block 32 is skipped.
+in a fixed, engine-known order. The blk.32 NextN draft head is appended
+after output.weight, so every trunk offset is unchanged by its presence.
 
 Usage: tools/engine-pack.py MODEL.gguf OUTDIR
 """
@@ -24,6 +25,17 @@ N_LAYERS = 32
 
 def is_attn(i):
     return (i + 1) % 4 == 0
+
+
+def mtp_names():
+    base = "blk.32."
+    core = ["attn_norm.weight", "attn_q.weight", "attn_k.weight",
+            "attn_v.weight", "attn_q_norm.weight", "attn_k_norm.weight",
+            "attn_output.weight", "post_attention_norm.weight",
+            "ffn_gate.weight", "ffn_up.weight", "ffn_down.weight",
+            "nextn.eh_proj.weight", "nextn.enorm.weight",
+            "nextn.hnorm.weight", "nextn.shared_head_norm.weight"]
+    return [base + n for n in core]
 
 
 def layer_names(i):
@@ -50,6 +62,7 @@ def main():
     for i in range(N_LAYERS):
         order += layer_names(i)
     order += ["output_norm.weight", "output.weight"]
+    order += mtp_names()
 
     idx_lines = []
     off = 0

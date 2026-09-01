@@ -1,6 +1,6 @@
 # Engine roadmap — what llama.cpp has that we don't
 
-Written 2026-09-01, after `matmul_skinny` beat tuned hipBLASLt 1.49x at the
+Written 2026-09-01, after `amar_matmul_skinny` beat tuned hipBLASLt 1.49x at the
 decode shape (`46693f9`). Conclusion of that work: the GEMM layer is ahead of
 everything around it. A faster matmul changes nothing until a forward pass
 exists to put it in. This file is the gap inventory and the build order.
@@ -61,7 +61,7 @@ Done and verified this session:
    parser incl. metadata values), `matmul_skinny_wt` consumes GGUF-native
    [out, in] weights, `test_gguf_gemm` passes on real blk.0.ffn_up.weight
    (max rel err 6e-4 vs numpy fp32).
-2. **Elementwise pack** — rmsnorm/swiglu/rope/softmax/embed/argmax in
+2. **Elementwise pack** — amar_rmsnorm/amar_swiglu/rope/softmax/embed/argmax in
    `kernels/elementwise.mojo`, all ≤1e-6 rel err vs fp64 host refs.
 
 Rescope: metadata shows qwen35 is a **hybrid SSM/attention** arch —

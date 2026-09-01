@@ -1,13 +1,13 @@
 """Double buffering and 128-bit global staging combined.
 
-`matmul_dbuf` and `matmul_vec4` each land ~+16% over `matmul_regtile` and they
+`amar_matmul_dbuf` and `amar_matmul_vec4` each land ~+16% over `amar_matmul_regtile` and they
 attack different things -- one hides global-load latency behind compute, the
 other cuts the number of load instructions issued.  Neither subsumes the other,
 so this variant runs both: float4 staging registers filled by disjoint thread
 ranges, held across the compute of the current tile, then committed to the
 other LDS buffer.
 
-Transposed A (from `matmul_ldst`) is kept throughout, so the inner loop reads
+Transposed A (from `amar_matmul_ldst`) is kept throughout, so the inner loop reads
 both operands 64 bits at a time.
 """
 
@@ -21,7 +21,7 @@ from matmul_ldst import BM, BN, BK, TM, TN, NTHREADS, LDS_PAD
 from matmul_vec4 import VEC, A_LOADERS, B_LOADERS
 
 
-def matmul_pipe[
+def amar_matmul_pipe[
     ALayout: TensorLayout, BLayout: TensorLayout, CLayout: TensorLayout
 ](
     A: TileTensor[dtype, ALayout, MutAnyOrigin],

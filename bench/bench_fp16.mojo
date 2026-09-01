@@ -11,7 +11,7 @@ from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext, HostBuffer
 from layout import TileTensor, row_major
 
-from matmul_wmma_lds import matmul_wmma_lds, BLK_M, BLK_N, NTHREADS
+from matmul_wmma_lds import amar_matmul_wmma_lds, BLK_M, BLK_N, NTHREADS
 
 comptime M = 512
 comptime N = 512
@@ -71,7 +71,7 @@ def main() raises:
     var C = TileTensor(cd, c_layout)
 
     comptime GRID = (ceildiv(N, BLK_N), ceildiv(M, BLK_M))
-    comptime kernel = matmul_wmma_lds[
+    comptime kernel = amar_matmul_wmma_lds[
         type_of(a_layout), type_of(b_layout), type_of(c_layout)
     ]
     comptime FLOPS = 2.0 * Float64(M) * Float64(N) * Float64(K)

@@ -14,7 +14,7 @@ comptime SK_THREADS = SBN
 comptime KCHUNK = 128
 
 
-def matmul_skinny[
+def amar_matmul_skinny[
     in_dtype: DType,
     ALayout: TensorLayout, BLayout: TensorLayout, PLayout: TensorLayout
 ](
@@ -77,7 +77,7 @@ def matmul_skinny[
             Cp[block_idx.y, i, col] = rebind[Cp.ElementType](acc[i])
 
 
-def matmul_skinny_v2[
+def amar_matmul_skinny_v2[
     in_dtype: DType, CPT: Int,
     ALayout: TensorLayout, BLayout: TensorLayout, PLayout: TensorLayout
 ](
@@ -145,7 +145,7 @@ def matmul_skinny_v2[
                 )
 
 
-def matmul_skinny_m1[
+def amar_matmul_skinny_m1[
     in_dtype: DType, CPT: Int,
     ALayout: TensorLayout, BLayout: TensorLayout, PLayout: TensorLayout
 ](
@@ -205,7 +205,7 @@ def matmul_skinny_m1[
 comptime Q8_BLOCK = 32
 
 
-def matmul_skinny_q8b[
+def amar_matmul_skinny_q8b[
     ALayout: TensorLayout, QLayout: TensorLayout, SLayout: TensorLayout,
     PLayout: TensorLayout
 ](
@@ -273,7 +273,7 @@ def matmul_skinny_q8b[
             Cp[block_idx.y, i, col] = rebind[Cp.ElementType](acc[i])
 
 
-def skinny_reduce_swiglu[
+def amar_skinny_reduce_swiglu[
     PLayout: TensorLayout, CLayout: TensorLayout
 ](
     Gp: TileTensor[dtype, PLayout, MutAnyOrigin],
@@ -301,7 +301,7 @@ def skinny_reduce_swiglu[
     C[r, c] = rebind[C.ElementType](silu * u)
 
 
-def skinny_reduce_swiglu_bf16[
+def amar_skinny_reduce_swiglu_bf16[
     PLayout: TensorLayout, CLayout: TensorLayout
 ](
     Gp: TileTensor[dtype, PLayout, MutAnyOrigin],
@@ -329,7 +329,7 @@ def skinny_reduce_swiglu_bf16[
     C[r, c] = rebind[C.ElementType]((silu * u).cast[DType.bfloat16]())
 
 
-def skinny_reduce_add[
+def amar_skinny_reduce_add[
     PLayout: TensorLayout, YLayout: TensorLayout
 ](
     Cp: TileTensor[dtype, PLayout, MutAnyOrigin],
@@ -353,7 +353,7 @@ def skinny_reduce_add[
     Y[r, c] = rebind[Y.ElementType](rebind[Scalar[dtype]](Y[r, c]) + acc)
 
 
-def skinny_reduce[
+def amar_skinny_reduce[
     PLayout: TensorLayout, CLayout: TensorLayout
 ](
     Cp: TileTensor[dtype, PLayout, MutAnyOrigin],

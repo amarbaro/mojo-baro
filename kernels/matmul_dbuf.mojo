@@ -1,8 +1,8 @@
 """Double-buffered register-tiled GEMM: overlap the next tile's global load
 with the current tile's compute.
 
-Builds on `matmul_ldst` (transposed A tile, 64-bit LDS reads) and changes only
-the pipeline.  `matmul_regtile` runs strictly serially per k-tile:
+Builds on `amar_matmul_ldst` (transposed A tile, 64-bit LDS reads) and changes only
+the pipeline.  `amar_matmul_regtile` runs strictly serially per k-tile:
 
     global load -> barrier -> compute -> barrier -> global load -> ...
 
@@ -35,7 +35,7 @@ comptime A_PER_THREAD = BM * BK // NTHREADS
 comptime B_PER_THREAD = BK * BN // NTHREADS
 
 
-def matmul_dbuf[
+def amar_matmul_dbuf[
     ALayout: TensorLayout, BLayout: TensorLayout, CLayout: TensorLayout
 ](
     A: TileTensor[dtype, ALayout, MutAnyOrigin],

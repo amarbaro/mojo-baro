@@ -17,7 +17,7 @@ from layout import TileTensor, row_major
 
 from amarbaro import AmarBaro
 from matmul_skinny import (
-    matmul_skinny, matmul_skinny_q8b, matmul_skinny_v2,
+    amar_matmul_skinny, amar_matmul_skinny_q8b, amar_matmul_skinny_v2,
     SM, SBN, SPLITK, SK_THREADS, Q8_BLOCK,
 )
 
@@ -91,19 +91,19 @@ def main() raises:
     comptime SGRID = (ceildiv(N, SBN), SPLITK)
     comptime FLOPS = 2.0 * Float64(M) * Float64(N) * Float64(K)
 
-    comptime skinny_b = matmul_skinny[
+    comptime skinny_b = amar_matmul_skinny[
         bf16, type_of(a_layout), type_of(b_layout), type_of(p_layout)
     ]
-    comptime skinny_q8b = matmul_skinny_q8b[
+    comptime skinny_q8b = amar_matmul_skinny_q8b[
         type_of(a_layout), type_of(qt_layout), type_of(st_layout), type_of(p_layout)
     ]
-    comptime skinny_v2_c2 = matmul_skinny_v2[
+    comptime skinny_v2_c2 = amar_matmul_skinny_v2[
         bf16, 2, type_of(a_layout), type_of(b_layout), type_of(p_layout)
     ]
-    comptime skinny_v2_c4 = matmul_skinny_v2[
+    comptime skinny_v2_c4 = amar_matmul_skinny_v2[
         bf16, 4, type_of(a_layout), type_of(b_layout), type_of(p_layout)
     ]
-    comptime skinny_v2_c8 = matmul_skinny_v2[
+    comptime skinny_v2_c8 = amar_matmul_skinny_v2[
         bf16, 8, type_of(a_layout), type_of(b_layout), type_of(p_layout)
     ]
     var tp = t_dev.unsafe_ptr()

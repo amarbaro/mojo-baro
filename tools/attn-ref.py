@@ -33,7 +33,7 @@ def f32(path, shape):
     return np.fromfile(D / path, dtype=np.float32).reshape(shape)
 
 
-def rmsnorm(x, w, axis=-1):
+def amar_rmsnorm(x, w, axis=-1):
     return x / np.sqrt(np.mean(x * x, axis=axis, keepdims=True) + EPS) * w
 
 
@@ -81,7 +81,7 @@ def main():
     kcache = rng.standard_normal((NKVH, T_PRE, HD)).astype(np.float32) * 0.3
     vcache = rng.standard_normal((NKVH, T_PRE, HD)).astype(np.float32) * 0.3
 
-    cur = rne(rmsnorm(x, an))
+    cur = rne(amar_rmsnorm(x, an))
 
     qfull = (cur @ wq.T).reshape(NQH, 2 * HD)
     q = qfull[:, :HD]
@@ -89,8 +89,8 @@ def main():
     k = (cur @ wk.T).reshape(NKVH, HD)
     v = (cur @ wv.T).reshape(NKVH, HD)
 
-    q = rmsnorm(q, qn)
-    k = rmsnorm(k, kn)
+    q = amar_rmsnorm(q, qn)
+    k = amar_rmsnorm(k, kn)
     q = rope(q, POS)
     k = rope(k, POS)
 

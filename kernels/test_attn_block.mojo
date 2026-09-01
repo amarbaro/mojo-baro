@@ -10,11 +10,11 @@ from std.sys import has_accelerator
 from max.gpu.host import DeviceContext
 from layout import TileTensor, row_major
 
-from elementwise import rmsnorm
-from matmul_skinny import matmul_skinny, skinny_reduce, SM, SBN, SPLITK, SK_THREADS
-from ssm import cast_bf16, residual_add
+from elementwise import amar_rmsnorm
+from matmul_skinny import amar_matmul_skinny, amar_skinny_reduce, SM, SBN, SPLITK, SK_THREADS
+from ssm import amar_cast_bf16, amar_residual_add
 from attn import (
-    head_rmsnorm, attn_decode, gate_mul, qgate_split, rope_yarn, kv_append,
+    amar_head_rmsnorm, amar_attn_decode, amar_gate_mul, amar_qgate_split, amar_rope_yarn, amar_kv_append,
     HD, NQH, NKVH,
 )
 
@@ -182,23 +182,23 @@ def main() raises:
     var Out1 = TileTensor(out_d, h_layout)
     var Out2 = TileTensor(out_d, c_h)
 
-    comptime rms_k = rmsnorm[type_of(x2_layout), type_of(h_layout), type_of(x2_layout)]
-    comptime cast_k = cast_bf16[type_of(h_layout), type_of(h_layout)]
-    comptime g_qf = matmul_skinny[bf16, type_of(row_major[1, H]()), type_of(wq_layout), type_of(p_qf)]
-    comptime g_kv = matmul_skinny[bf16, type_of(row_major[1, H]()), type_of(wkv_layout), type_of(p_kv)]
-    comptime g_h = matmul_skinny[bf16, type_of(row_major[1, H]()), type_of(wo_layout), type_of(p_h)]
-    comptime r_qf = skinny_reduce[type_of(p_qf), type_of(c_qf)]
-    comptime r_kv = skinny_reduce[type_of(p_kv), type_of(c_kv)]
-    comptime r_h = skinny_reduce[type_of(p_h), type_of(c_h)]
-    comptime split_k = qgate_split[type_of(c_qf), type_of(q_layout), type_of(h_layout)]
-    comptime hrms_q = head_rmsnorm[type_of(q_layout), type_of(hd_layout)]
-    comptime hrms_kv = head_rmsnorm[type_of(kv_layout), type_of(hd_layout)]
-    comptime rope_q = rope_yarn[type_of(q_layout)]
-    comptime rope_k = rope_yarn[type_of(kv_layout)]
-    comptime append_k = kv_append[type_of(cache_layout), type_of(kv_layout)]
-    comptime att_k = attn_decode[type_of(q_layout), type_of(cache_layout), type_of(q_layout)]
-    comptime gmul_k = gate_mul[type_of(h_layout), type_of(h_layout)]
-    comptime add_k = residual_add[type_of(h_layout), type_of(h_layout)]
+    comptime rms_k = amar_rmsnorm[type_of(x2_layout), type_of(h_layout), type_of(x2_layout)]
+    comptime cast_k = amar_cast_bf16[type_of(h_layout), type_of(h_layout)]
+    comptime g_qf = amar_matmul_skinny[bf16, type_of(row_major[1, H]()), type_of(wq_layout), type_of(p_qf)]
+    comptime g_kv = amar_matmul_skinny[bf16, type_of(row_major[1, H]()), type_of(wkv_layout), type_of(p_kv)]
+    comptime g_h = amar_matmul_skinny[bf16, type_of(row_major[1, H]()), type_of(wo_layout), type_of(p_h)]
+    comptime r_qf = amar_skinny_reduce[type_of(p_qf), type_of(c_qf)]
+    comptime r_kv = amar_skinny_reduce[type_of(p_kv), type_of(c_kv)]
+    comptime r_h = amar_skinny_reduce[type_of(p_h), type_of(c_h)]
+    comptime split_k = amar_qgate_split[type_of(c_qf), type_of(q_layout), type_of(h_layout)]
+    comptime hrms_q = amar_head_rmsnorm[type_of(q_layout), type_of(hd_layout)]
+    comptime hrms_kv = amar_head_rmsnorm[type_of(kv_layout), type_of(hd_layout)]
+    comptime rope_q = amar_rope_yarn[type_of(q_layout)]
+    comptime rope_k = amar_rope_yarn[type_of(kv_layout)]
+    comptime append_k = amar_kv_append[type_of(cache_layout), type_of(kv_layout)]
+    comptime att_k = amar_attn_decode[type_of(q_layout), type_of(cache_layout), type_of(q_layout)]
+    comptime gmul_k = amar_gate_mul[type_of(h_layout), type_of(h_layout)]
+    comptime add_k = amar_residual_add[type_of(h_layout), type_of(h_layout)]
 
     ctx.enqueue_function[rms_k](X2, An, Cur2, Int32(H), Float32(1e-6), grid_dim=1, block_dim=256)
     ctx.enqueue_function[cast_k](Cur1, CurB1, Int32(H), grid_dim=ceildiv(H, 256), block_dim=256)

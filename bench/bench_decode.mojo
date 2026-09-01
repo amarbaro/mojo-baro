@@ -17,9 +17,9 @@ from layout import TileTensor, row_major
 
 from amarbaro import AmarBaro
 from matmul import dtype, BM, BN, TM, TN
-from matmul_dbuf import matmul_dbuf
-from matmul_pipe import matmul_pipe
-from matmul_skinny import matmul_skinny, skinny_reduce, SM, SBN, SPLITK, SK_THREADS
+from matmul_dbuf import amar_matmul_dbuf
+from matmul_pipe import amar_matmul_pipe
+from matmul_skinny import amar_matmul_skinny, amar_skinny_reduce, SM, SBN, SPLITK, SK_THREADS
 
 comptime M = 8
 comptime N = 4096
@@ -74,19 +74,19 @@ def main() raises:
 
     comptime FLOPS = 2.0 * Float64(M) * Float64(N) * Float64(K)
 
-    comptime dbuf = matmul_dbuf[
+    comptime dbuf = amar_matmul_dbuf[
         type_of(a_layout), type_of(b_layout), type_of(c_layout)
     ]
-    comptime pipe = matmul_pipe[
+    comptime pipe = amar_matmul_pipe[
         type_of(a_layout), type_of(b_layout), type_of(c_layout)
     ]
-    comptime skinny = matmul_skinny[
+    comptime skinny = amar_matmul_skinny[
         dtype, type_of(a_layout), type_of(b_layout), type_of(p_layout)
     ]
-    comptime skinny16 = matmul_skinny[
+    comptime skinny16 = amar_matmul_skinny[
         DType.bfloat16, type_of(a_layout), type_of(b_layout), type_of(p_layout)
     ]
-    comptime reduce = skinny_reduce[type_of(p_layout), type_of(c_layout)]
+    comptime reduce = amar_skinny_reduce[type_of(p_layout), type_of(c_layout)]
 
     comptime RGRID = (ceildiv(N, BN), ceildiv(M, BM))
     comptime RBLOCK = (BN // TN, BM // TM)

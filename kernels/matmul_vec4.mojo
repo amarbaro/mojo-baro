@@ -1,10 +1,10 @@
 """Register-tiled GEMM staging global memory through 128-bit (float4) loads.
 
-Builds on `matmul_ldst` (transposed A tile, 64-bit LDS reads) and changes only
+Builds on `amar_matmul_ldst` (transposed A tile, 64-bit LDS reads) and changes only
 how the tiles are fetched from global memory.
 
 At BM32/BN32/BK8 with 256 threads each tile is exactly 256 floats, so
-`matmul_regtile` has every thread issue one scalar 32-bit load per tile -- eight
+`amar_matmul_regtile` has every thread issue one scalar 32-bit load per tile -- eight
 wavefront-wide load instructions per k-step.  Reading four contiguous floats per
 thread instead needs 64 threads per tile, so A and B are fetched by disjoint
 thread ranges (0..63 and 64..127) and the whole staging step costs four
@@ -32,7 +32,7 @@ comptime A_LOADERS = BM * BK // VEC  # 64
 comptime B_LOADERS = BK * BN // VEC  # 64
 
 
-def matmul_vec4[
+def amar_matmul_vec4[
     ALayout: TensorLayout, BLayout: TensorLayout, CLayout: TensorLayout
 ](
     A: TileTensor[dtype, ALayout, MutAnyOrigin],

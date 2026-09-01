@@ -59,9 +59,9 @@ reporting throughput and exits non-zero if any variant is wrong.
 | variant | GFLOP/s (512³) | notes |
 |---|---|---|
 | `hipblaslt` | ~5200 | **vendor baseline**, tuned (algo × splitK × wgm) |
-| `matmul_naive` | ~1250 | one thread per output element |
-| `matmul_tiled` | ~2270 | 16×16 shared-memory tiles |
-| `matmul_regtile` | ~5130 | BM32 BN32 BK8 TM2 TN2, swept |
+| `amar_matmul_naive` | ~1250 | one thread per output element |
+| `amar_matmul_tiled` | ~2270 | 16×16 shared-memory tiles |
+| `amar_matmul_regtile` | ~5130 | BM32 BN32 BK8 TM2 TN2, swept |
 
 **regtile and tuned hipBLASLt are a tie**, trading places by size:
 
@@ -170,7 +170,7 @@ FP16/BF16 -> FP32)"*. **Any fp16 TFLOPS figure (aiter's ~82–89) is therefore n
 comparable to this fp32 benchmark** — they use different hardware inside the
 same chip.
 
-**fp16 WMMA kernel — measured (`bench/bench_fp16.mojo`, `kernels/matmul_wmma_lds.mojo`).**
+**fp16 WMMA kernel — measured (`bench/bench_fp16.mojo`, `kernels/amar_matmul_wmma_lds.mojo`).**
 `WARPS 4x4 WTILE 2x1`, swept over 72 configs with `./bench/sweep.py wmma`:
 
 | size | ours | aiter tuned Triton |

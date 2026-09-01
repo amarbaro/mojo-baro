@@ -16,7 +16,7 @@ from std.sys import has_accelerator
 from max.gpu.host import DeviceContext
 from layout import TileTensor, row_major
 
-from matmul_skinny import matmul_skinny, skinny_reduce, SM, SBN, SPLITK, SK_THREADS
+from matmul_skinny import amar_matmul_skinny, amar_skinny_reduce, SM, SBN, SPLITK, SK_THREADS
 
 comptime M = 8
 comptime K = 4096
@@ -77,10 +77,10 @@ def main() raises:
     var C = TileTensor(c_dev, c_layout)
     var Cp = TileTensor(p_dev, p_layout)
 
-    comptime skinny_wt = matmul_skinny[
+    comptime skinny_wt = amar_matmul_skinny[
         bf16, type_of(a_layout), type_of(w_layout), type_of(p_layout)
     ]
-    comptime reduce = skinny_reduce[type_of(p_layout), type_of(c_layout)]
+    comptime reduce = amar_skinny_reduce[type_of(p_layout), type_of(c_layout)]
 
     ctx.enqueue_function[skinny_wt](
         A, W, Cp, Int32(M), Int32(N), Int32(K),

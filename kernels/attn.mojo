@@ -12,7 +12,7 @@ comptime NKVH = 4
 comptime MAX_T = 1024
 
 
-def head_rmsnorm[
+def amar_head_rmsnorm[
     XLayout: TensorLayout, GLayout: TensorLayout
 ](
     X: TileTensor[f32, XLayout, MutAnyOrigin],
@@ -38,7 +38,7 @@ def head_rmsnorm[
     )
 
 
-def attn_decode[
+def amar_attn_decode[
     QLayout: TensorLayout, KLayout: TensorLayout, OLayout: TensorLayout
 ](
     Q: TileTensor[f32, QLayout, MutAnyOrigin],
@@ -122,7 +122,7 @@ def attn_decode[
     O[qrow, tid] = rebind[O.ElementType](o * inv)
 
 
-def gate_mul[
+def amar_gate_mul[
     XLayout: TensorLayout, GLayout: TensorLayout
 ](
     X: TileTensor[f32, XLayout, MutAnyOrigin],
@@ -139,7 +139,7 @@ def gate_mul[
     )
 
 
-def gate_mul_cast[
+def amar_gate_mul_cast[
     XLayout: TensorLayout, GLayout: TensorLayout, OLayout: TensorLayout
 ](
     X: TileTensor[f32, XLayout, MutAnyOrigin],
@@ -167,7 +167,7 @@ comptime FREQ_SCALE = Float32(0.25)
 comptime MSCALE = Float32(1.1386294361119891)
 
 
-def qgate_split[
+def amar_qgate_split[
     FLayout: TensorLayout, QLayout: TensorLayout, GLayout: TensorLayout
 ](
     Qfull: TileTensor[f32, FLayout, MutAnyOrigin],
@@ -184,7 +184,7 @@ def qgate_split[
     )
 
 
-def rope_yarn[
+def amar_rope_yarn[
     XLayout: TensorLayout
 ](
     X: TileTensor[f32, XLayout, MutAnyOrigin],
@@ -211,7 +211,7 @@ def rope_yarn[
     X[row, j + NROT // 2] = rebind[X.ElementType](x0 * s + x1 * c)
 
 
-def kv_append[
+def amar_kv_append[
     CLayout: TensorLayout, NLayout: TensorLayout
 ](
     Cache: TileTensor[f32, CLayout, MutAnyOrigin],

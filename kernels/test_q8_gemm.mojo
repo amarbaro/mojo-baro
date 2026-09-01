@@ -6,8 +6,8 @@ Consumes .work/gguf/ from:
 Checks, in order:
 1. skinny_q8 parity on real quantized gate/up weights vs the numpy fp32
    reference computed from the SAME dequantized values (gate: rel < 1e-2).
-2. Fused skinny_reduce_swiglu vs the unfused three-launch path
-   (reduce, reduce, swiglu) from identical partials: must agree to fp32
+2. Fused amar_skinny_reduce_swiglu vs the unfused three-launch path
+   (reduce, reduce, amar_swiglu) from identical partials: must agree to fp32
    round-off (both sum in the same order; tolerance 1e-6 rel).
 3. Timing at the real FFN shape (M=8, K=4096, N=12288): bf16 vs q8 weight
    stream. bf16 W is 100 MB (> 96 MB Infinity Cache), q8 is 56 MB (fits),
@@ -20,10 +20,10 @@ from std.sys import has_accelerator
 from max.gpu.host import DeviceContext
 from layout import TileTensor, row_major
 
-from elementwise import swiglu
+from elementwise import amar_swiglu
 from matmul_skinny import (
-    matmul_skinny, matmul_skinny_q8b,
-    skinny_reduce, skinny_reduce_swiglu,
+    amar_matmul_skinny, amar_matmul_skinny_q8b,
+    amar_skinny_reduce, amar_skinny_reduce_swiglu,
     SM, SBN, SPLITK, SK_THREADS, Q8_BLOCK,
 )
 
@@ -85,11 +85,11 @@ def main() raises:
     var Pg = TileTensor(pg_dev, p_layout)
     var Pu = TileTensor(pu_dev, p_layout)
 
-    comptime reduce = skinny_reduce[type_of(p_layout), type_of(c_layout)]
-    comptime reduce_swiglu = skinny_reduce_swiglu[
+    comptime reduce = amar_skinny_reduce[type_of(p_layout), type_of(c_layout)]
+    comptime reduce_swiglu = amar_skinny_reduce_swiglu[
         type_of(p_layout), type_of(c_layout)
     ]
-    comptime swiglu_k = swiglu[
+    comptime swiglu_k = amar_swiglu[
         type_of(cf_layout), type_of(cf_layout), type_of(cf_layout)
     ]
 
@@ -119,7 +119,7 @@ def main() raises:
     var Stg = TileTensor(stg_dev, st_layout)
     var Qtu = TileTensor(qtu_dev, qt_layout)
     var Stu = TileTensor(stu_dev, st_layout)
-    comptime skinny_q8b = matmul_skinny_q8b[
+    comptime skinny_q8b = amar_matmul_skinny_q8b[
         type_of(a_layout), type_of(qt_layout), type_of(st_layout), type_of(p_layout)
     ]
     ctx.enqueue_function[skinny_q8b](
@@ -152,11 +152,11 @@ def main() raises:
     if worst > 1e-2:
         raise Error("q8b parity failure")
 
-    # --- 2. fused swiglu epilogue vs unfused three-launch path ---
+    # --- 2. fused amar_swiglu epilogue vs unfused three-launch path ---
     ctx.enqueue_function[reduce_swiglu](
         Pg, Pu, C, Int32(M), Int32(N), grid_dim=RED_GRID, block_dim=256
     )
-    # Unfused: reduce into two flat tensors, then elementwise swiglu.
+    # Unfused: reduce into two flat tensors, then elementwise amar_swiglu.
     ctx.enqueue_function[reduce](
         Pg, C2, Int32(M), Int32(N), grid_dim=RED_GRID, block_dim=256
     )
@@ -181,8 +181,8 @@ def main() raises:
             abs(Float64(c2_host[i])) + 1e-6
         )
         worst = max(worst, err)
-    print("fused swiglu vs unfused max_rel:", worst)
+    print("fused amar_swiglu vs unfused max_rel:", worst)
     if worst > 1e-6:
-        raise Error("fused swiglu mismatch")
+        raise Error("fused amar_swiglu mismatch")
 
-    print("PASS: q8b dequant-in-kernel + fused swiglu verified")
+    print("PASS: q8b dequant-in-kernel + fused amar_swiglu verified")

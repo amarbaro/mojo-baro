@@ -15,7 +15,7 @@ from layout import TileTensor, row_major
 
 from amarbaro import AmarBaro
 from matmul_skinny import (
-    matmul_skinny_v2, matmul_skinny_m1,
+    amar_matmul_skinny_v2, amar_matmul_skinny_m1,
     SM, SPLITK, SK_THREADS,
 )
 
@@ -76,13 +76,13 @@ def main() raises:
     var A = TileTensor(a_dev, a_layout)
     var Cp = TileTensor(p_dev, p_layout)
 
-    comptime skinny_v2_c8 = matmul_skinny_v2[
+    comptime skinny_v2_c8 = amar_matmul_skinny_v2[
         bf16, 8, type_of(a_layout), type_of(b_layout), type_of(p_layout)
     ]
-    comptime skinny_m1_c8 = matmul_skinny_m1[
+    comptime skinny_m1_c8 = amar_matmul_skinny_m1[
         bf16, 8, type_of(a_layout), type_of(b_layout), type_of(p_layout)
     ]
-    comptime skinny_m1_c4 = matmul_skinny_m1[
+    comptime skinny_m1_c4 = amar_matmul_skinny_m1[
         bf16, 4, type_of(a_layout), type_of(b_layout), type_of(p_layout)
     ]
 

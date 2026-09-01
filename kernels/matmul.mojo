@@ -13,7 +13,7 @@ comptime dtype = DType.float32
 comptime TILE = 16
 
 
-def matmul_naive[
+def amar_matmul_naive[
     ALayout: TensorLayout, BLayout: TensorLayout, CLayout: TensorLayout
 ](
     A: TileTensor[dtype, ALayout, MutAnyOrigin],
@@ -41,7 +41,7 @@ def matmul_naive[
     C[row, col] = rebind[C.ElementType](acc)
 
 
-def matmul_tiled[
+def amar_matmul_tiled[
     ALayout: TensorLayout, BLayout: TensorLayout, CLayout: TensorLayout
 ](
     A: TileTensor[dtype, ALayout, MutAnyOrigin],
@@ -108,7 +108,7 @@ comptime TN = 2
 comptime NTHREADS = (BM // TM) * (BN // TN)  # 256
 
 
-def matmul_regtile[
+def amar_matmul_regtile[
     ALayout: TensorLayout, BLayout: TensorLayout, CLayout: TensorLayout
 ](
     A: TileTensor[dtype, ALayout, MutAnyOrigin],

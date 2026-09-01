@@ -11,11 +11,11 @@ from std.sys import has_accelerator
 from max.gpu.host import DeviceContext
 from layout import TileTensor, row_major
 
-from elementwise import rmsnorm
-from matmul_skinny import matmul_skinny, skinny_reduce, SM, SBN, SPLITK, SK_THREADS
+from elementwise import amar_rmsnorm
+from matmul_skinny import amar_matmul_skinny, amar_skinny_reduce, SM, SBN, SPLITK, SK_THREADS
 from ssm import (
-    cast_bf16, residual_add, ssm_gates, ssm_conv, ssm_qk_l2norm,
-    ssm_delta_step, ssm_gated_out, CONV, NH_V, SSTATE,
+    amar_cast_bf16, amar_residual_add, amar_ssm_gates, amar_ssm_conv, amar_ssm_qk_l2norm,
+    amar_ssm_delta_step, amar_ssm_gated_out, CONV, NH_V, SSTATE,
 )
 
 comptime H = 4096
@@ -209,29 +209,29 @@ def main() raises:
     var Out1 = TileTensor(out_d, h_layout)
     var Out2 = TileTensor(out_d, c_h)
 
-    comptime rms_k = rmsnorm[type_of(x2_layout), type_of(h_layout), type_of(x2_layout)]
-    comptime cast_k = cast_bf16[type_of(h_layout), type_of(hb_layout)]
-    comptime g_qkv = matmul_skinny[bf16, type_of(row_major[1, H]()), type_of(wqkv_layout), type_of(p_qkv)]
-    comptime g_h = matmul_skinny[bf16, type_of(row_major[1, H]()), type_of(wsq_layout), type_of(p_h)]
-    comptime g_ab = matmul_skinny[bf16, type_of(row_major[1, H]()), type_of(wab_layout), type_of(p_ab)]
-    comptime r_qkv = skinny_reduce[type_of(p_qkv), type_of(c_qkv)]
-    comptime r_h = skinny_reduce[type_of(p_h), type_of(c_h)]
-    comptime r_ab = skinny_reduce[type_of(p_ab), type_of(c_ab)]
-    comptime gates_k = ssm_gates[
+    comptime rms_k = amar_rmsnorm[type_of(x2_layout), type_of(h_layout), type_of(x2_layout)]
+    comptime cast_k = amar_cast_bf16[type_of(h_layout), type_of(hb_layout)]
+    comptime g_qkv = amar_matmul_skinny[bf16, type_of(row_major[1, H]()), type_of(wqkv_layout), type_of(p_qkv)]
+    comptime g_h = amar_matmul_skinny[bf16, type_of(row_major[1, H]()), type_of(wsq_layout), type_of(p_h)]
+    comptime g_ab = amar_matmul_skinny[bf16, type_of(row_major[1, H]()), type_of(wab_layout), type_of(p_ab)]
+    comptime r_qkv = amar_skinny_reduce[type_of(p_qkv), type_of(c_qkv)]
+    comptime r_h = amar_skinny_reduce[type_of(p_h), type_of(c_h)]
+    comptime r_ab = amar_skinny_reduce[type_of(p_ab), type_of(c_ab)]
+    comptime gates_k = amar_ssm_gates[
         type_of(g_layout), type_of(g_layout), type_of(g_layout),
         type_of(g_layout), type_of(g_layout)
     ]
-    comptime conv_k = ssm_conv[
+    comptime conv_k = amar_ssm_conv[
         type_of(conv_layout), type_of(cs_layout), type_of(cw_layout), type_of(conv_layout)
     ]
-    comptime l2_k = ssm_qk_l2norm[type_of(conv_layout)]
-    comptime delta_k = ssm_delta_step[
+    comptime l2_k = amar_ssm_qk_l2norm[type_of(conv_layout)]
+    comptime delta_k = amar_ssm_delta_step[
         type_of(s_layout), type_of(conv_layout), type_of(g_layout), type_of(o_layout)
     ]
-    comptime gated_k = ssm_gated_out[
+    comptime gated_k = amar_ssm_gated_out[
         type_of(o_layout), type_of(h_layout), type_of(n_layout), type_of(h_layout)
     ]
-    comptime add_k = residual_add[type_of(h_layout), type_of(h_layout)]
+    comptime add_k = amar_residual_add[type_of(h_layout), type_of(h_layout)]
 
     ctx.enqueue_function[rms_k](X2, An, Cur2, Int32(H), Float32(1e-6), grid_dim=1, block_dim=256)
     ctx.enqueue_function[cast_k](Cur1, CurB1, Int32(H), grid_dim=ceildiv(H, 256), block_dim=256)

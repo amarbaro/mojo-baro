@@ -16,7 +16,7 @@ comptime SSTATE = 128
 comptime SSM_EPS = Float32(1e-6)
 
 
-def cast_bf16[
+def amar_cast_bf16[
     XLayout: TensorLayout, OLayout: TensorLayout
 ](
     X: TileTensor[f32, XLayout, MutAnyOrigin],
@@ -31,7 +31,7 @@ def cast_bf16[
         )
 
 
-def residual_add[
+def amar_residual_add[
     XLayout: TensorLayout, YLayout: TensorLayout
 ](
     X: TileTensor[f32, XLayout, MutAnyOrigin],
@@ -46,7 +46,7 @@ def residual_add[
         )
 
 
-def ssm_gates[
+def amar_ssm_gates[
     ALayout: TensorLayout, BLayout: TensorLayout, GLayout: TensorLayout,
     WLayout: TensorLayout, DLayout: TensorLayout
 ](
@@ -70,7 +70,7 @@ def ssm_gates[
     EgOut[h] = rebind[EgOut.ElementType](exp(sp * rebind[Scalar[f32]](SsmA[h])))
 
 
-def ssm_reduce_gates[
+def amar_ssm_reduce_gates[
     PLayout: TensorLayout, GLayout: TensorLayout, DLayout: TensorLayout
 ](
     Ap: TileTensor[f32, PLayout, MutAnyOrigin],
@@ -99,7 +99,7 @@ def ssm_reduce_gates[
     EgOut[h] = rebind[EgOut.ElementType](exp(sp * rebind[Scalar[f32]](SsmA[h])))
 
 
-def ssm_conv[
+def amar_ssm_conv[
     QLayout: TensorLayout, SLayout: TensorLayout, WLayout: TensorLayout,
     OLayout: TensorLayout
 ](
@@ -130,7 +130,7 @@ def ssm_conv[
     ConvState1[2, c] = rebind[ConvState1.ElementType](w3)
 
 
-def ssm_qk_l2norm[
+def amar_ssm_qk_l2norm[
     XLayout: TensorLayout
 ](
     X: TileTensor[f32, XLayout, MutAnyOrigin],
@@ -156,7 +156,7 @@ def ssm_qk_l2norm[
     X[base + tid] = rebind[X.ElementType](v * inv)
 
 
-def ssm_delta_step[
+def amar_ssm_delta_step[
     S0Layout: TensorLayout, CLayout: TensorLayout, GLayout: TensorLayout,
     OLayout: TensorLayout
 ](
@@ -199,7 +199,7 @@ def ssm_delta_step[
     O[h, j] = rebind[O.ElementType](o)
 
 
-def ssm_gated_out[
+def amar_ssm_gated_out[
     OLayout: TensorLayout, ZLayout: TensorLayout, NLayout: TensorLayout,
     RLayout: TensorLayout
 ](
@@ -230,7 +230,7 @@ def ssm_gated_out[
     )
 
 
-def ssm_gated_out_bf16[
+def amar_ssm_gated_out_bf16[
     OLayout: TensorLayout, ZLayout: TensorLayout, NLayout: TensorLayout,
     RLayout: TensorLayout
 ](

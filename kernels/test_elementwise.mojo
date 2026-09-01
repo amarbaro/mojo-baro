@@ -11,7 +11,7 @@ from max.gpu.host import DeviceContext
 from layout import TileTensor, row_major
 
 from elementwise import (
-    rmsnorm, swiglu, rope_rows, softmax_rows, embed_lookup, argmax_row,
+    amar_rmsnorm, amar_swiglu, amar_rope_rows, amar_softmax_rows, amar_embed_lookup, amar_argmax_row,
     EW_THREADS,
 )
 
@@ -60,8 +60,8 @@ def main() raises:
     var G = TileTensor(g_dev, g_layout)
     var O = TileTensor(o_dev, x_layout)
 
-    # --- rmsnorm ---
-    comptime rms_k = rmsnorm[type_of(x_layout), type_of(g_layout), type_of(x_layout)]
+    # --- amar_rmsnorm ---
+    comptime rms_k = amar_rmsnorm[type_of(x_layout), type_of(g_layout), type_of(x_layout)]
     ctx.enqueue_function[rms_k](
         X, G, O, Int32(H), Float32(1e-6), grid_dim=R, block_dim=EW_THREADS
     )
@@ -79,10 +79,10 @@ def main() raises:
             if err > worst:
                 worst = err
     if worst > 1e-4:
-        fail("rmsnorm", worst)
-    print("rmsnorm ok", worst)
+        fail("amar_rmsnorm", worst)
+    print("amar_rmsnorm ok", worst)
 
-    # --- swiglu (reuse x as gate, g broadcast? use two flat tensors) ---
+    # --- amar_swiglu (reuse x as gate, g broadcast? use two flat tensors) ---
     var u_host = ctx.enqueue_create_host_buffer[f32](R * H)
     ctx.synchronize()
     for i in range(R * H):
@@ -93,7 +93,7 @@ def main() raises:
     var Xf = TileTensor(x_dev, flat_layout)
     var Uf = TileTensor(u_dev, flat_layout)
     var Of = TileTensor(o_dev, flat_layout)
-    comptime swiglu_k = swiglu[
+    comptime swiglu_k = amar_swiglu[
         type_of(flat_layout), type_of(flat_layout), type_of(flat_layout)
     ]
     ctx.enqueue_function[swiglu_k](
@@ -110,13 +110,13 @@ def main() raises:
         if err > worst:
             worst = err
     if worst > 1e-4:
-        fail("swiglu", worst)
-    print("swiglu ok", worst)
+        fail("amar_swiglu", worst)
+    print("amar_swiglu ok", worst)
 
     # --- rope (in place on a copy of x) ---
     ctx.enqueue_copy(dst_buf=o_dev, src_buf=x_host)
     ctx.synchronize()
-    comptime rope_k = rope_rows[type_of(x_layout)]
+    comptime rope_k = amar_rope_rows[type_of(x_layout)]
     comptime pos = 5
     comptime theta = 10000.0
     ctx.enqueue_function[rope_k](
@@ -161,11 +161,11 @@ def main() raises:
     var S = TileTensor(s_dev, v_layout)
     var T = TileTensor(t_dev, tok_layout)
 
-    comptime argmax_k = argmax_row[type_of(v_layout), type_of(tok_layout)]
+    comptime argmax_k = amar_argmax_row[type_of(v_layout), type_of(tok_layout)]
     ctx.enqueue_function[argmax_k](
         S, T, Int32(V), grid_dim=R, block_dim=EW_THREADS
     )
-    comptime softmax_k = softmax_rows[type_of(v_layout)]
+    comptime softmax_k = amar_softmax_rows[type_of(v_layout)]
     ctx.enqueue_function[softmax_k](S, Int32(V), grid_dim=R, block_dim=EW_THREADS)
     ctx.enqueue_copy(dst_buf=s_host, src_buf=s_dev)
     ctx.enqueue_copy(dst_buf=t_host, src_buf=t_dev)
@@ -204,7 +204,7 @@ def main() raises:
     ctx.enqueue_copy(dst_buf=tab_dev, src_buf=tab_host)
     ctx.synchronize()
     var Tab = TileTensor(tab_dev, table_layout)
-    comptime embed_k = embed_lookup[type_of(table_layout), type_of(x_layout)]
+    comptime embed_k = amar_embed_lookup[type_of(table_layout), type_of(x_layout)]
     comptime token = 123
     ctx.enqueue_function[embed_k](
         Tab, O, Int32(token), Int32(H),

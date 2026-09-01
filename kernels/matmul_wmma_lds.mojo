@@ -6,7 +6,7 @@ with size (14.4 / 7.1 / 16.4 TFLOPS at 1024/2048/4096). Here each block stages
 one A and one B tile into LDS cooperatively, then every warp builds its
 fragments from LDS.
 
-Fragment shape and lane mapping are as documented in matmul_wmma.mojo:
+Fragment shape and lane mapping are as documented in amar_matmul_wmma.mojo:
 RDNA3 wave32 wants a/b 16 wide, c/d 8 wide.
 
 Two things were tried here and are NOT worth retrying:
@@ -47,7 +47,7 @@ comptime BLK_K = WMMA_K
 comptime NTHREADS = WARPS_M * WARPS_N * 32   # 128
 
 
-def matmul_wmma_lds[
+def amar_matmul_wmma_lds[
     ALayout: TensorLayout, BLayout: TensorLayout, CLayout: TensorLayout
 ](
     A: TileTensor[DType.float16, ALayout, MutAnyOrigin],

@@ -19,12 +19,12 @@ from layout import TileTensor, row_major
 
 from amarbaro import AmarBaro
 from matmul import (
-    matmul_naive, matmul_tiled, matmul_regtile, dtype, TILE, BM, BN, TM, TN
+    amar_matmul_naive, amar_matmul_tiled, amar_matmul_regtile, dtype, TILE, BM, BN, TM, TN
 )
-from matmul_ldst import matmul_ldst
-from matmul_dbuf import matmul_dbuf
-from matmul_vec4 import matmul_vec4
-from matmul_pipe import matmul_pipe
+from matmul_ldst import amar_matmul_ldst
+from matmul_dbuf import amar_matmul_dbuf
+from matmul_vec4 import amar_matmul_vec4
+from matmul_pipe import amar_matmul_pipe
 
 comptime M = 512
 comptime N = 512
@@ -79,30 +79,30 @@ def main() raises:
     comptime BLOCK = (TILE, TILE)
     comptime FLOPS = 2.0 * Float64(M) * Float64(N) * Float64(K)
 
-    comptime regtile = matmul_regtile[
+    comptime regtile = amar_matmul_regtile[
         type_of(a_layout), type_of(b_layout), type_of(c_layout)
     ]
     comptime RGRID = (ceildiv(N, BN), ceildiv(M, BM))
     comptime RBLOCK = (BN // TN, BM // TM)
 
-    comptime ldst = matmul_ldst[
+    comptime ldst = amar_matmul_ldst[
         type_of(a_layout), type_of(b_layout), type_of(c_layout)
     ]
-    comptime dbuf = matmul_dbuf[
+    comptime dbuf = amar_matmul_dbuf[
         type_of(a_layout), type_of(b_layout), type_of(c_layout)
     ]
-    comptime vec4 = matmul_vec4[
-        type_of(a_layout), type_of(b_layout), type_of(c_layout)
-    ]
-
-    comptime pipe = matmul_pipe[
+    comptime vec4 = amar_matmul_vec4[
         type_of(a_layout), type_of(b_layout), type_of(c_layout)
     ]
 
-    comptime naive = matmul_naive[
+    comptime pipe = amar_matmul_pipe[
         type_of(a_layout), type_of(b_layout), type_of(c_layout)
     ]
-    comptime tiled = matmul_tiled[
+
+    comptime naive = amar_matmul_naive[
+        type_of(a_layout), type_of(b_layout), type_of(c_layout)
+    ]
+    comptime tiled = amar_matmul_tiled[
         type_of(a_layout), type_of(b_layout), type_of(c_layout)
     ]
 

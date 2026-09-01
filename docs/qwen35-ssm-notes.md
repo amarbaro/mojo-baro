@@ -139,7 +139,7 @@ layer does NOT carry `ssm_*` tensors, and an SSM layer does NOT carry `wq/wk/wv`
 
 Source: `/home/mario/llama.cpp/src/models/qwen35.cpp` `build_layer_attn` (lines 258-337),
 `ggml_rope_multi` impl in `/home/mario/llama.cpp/ggml/src/ggml-cpu/ops.cpp`
-(`ggml_mrope_cache_init` 5858-5926, `rope_yarn` 5825-5840, dispatch ~5995-6100),
+(`ggml_mrope_cache_init` 5858-5926, `amar_rope_yarn` 5825-5840, dispatch ~5995-6100),
 YaRN corr-dims in `/home/mario/llama.cpp/ggml/src/ggml.c` (`ggml_rope_yarn_corr_dim`
 4406-4408, `ggml_rope_yarn_corr_dims` 4410-4418), hparams loading in
 `/home/mario/llama.cpp/src/llama-model.cpp` (n_rot/key_length ~1326-1343, rope type

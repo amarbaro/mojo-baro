@@ -30,7 +30,7 @@ def f32(path, shape):
     return np.fromfile(D / path, dtype=np.float32).reshape(shape)
 
 
-def rmsnorm(x, w, axis=-1):
+def amar_rmsnorm(x, w, axis=-1):
     return x / np.sqrt(np.mean(x * x, axis=axis, keepdims=True) + EPS) * w
 
 
@@ -55,7 +55,7 @@ def main():
     conv_state = rng.standard_normal((3, CONV)).astype(np.float32) * 0.1
     S0 = rng.standard_normal((NH_V, S, S)).astype(np.float32) * 0.05
 
-    cur = rmsnorm(x, attn_norm)
+    cur = amar_rmsnorm(x, attn_norm)
     u = cur.view(np.uint32)
     cur = (((u + 0x7FFF + ((u >> 16) & 1)) >> 16) << 16).astype(np.uint32).view(np.float32)
 
@@ -88,7 +88,7 @@ def main():
         o[h] = Sh.T @ q[h]
         S1[h] = Sh
 
-    gated = (rmsnorm(o, norm_w) * silu(z.reshape(NH_V, S))).reshape(H)
+    gated = (amar_rmsnorm(o, norm_w) * silu(z.reshape(NH_V, S))).reshape(H)
     ug = gated.view(np.uint32)
     gated = (((ug + 0x7FFF + ((ug >> 16) & 1)) >> 16) << 16).astype(np.uint32).view(np.float32)
     out = gated @ wout.T

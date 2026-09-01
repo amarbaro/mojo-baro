@@ -31,7 +31,7 @@ def T(name, shape):
     return pack[off : off + n * 4].view(np.float32).reshape(shape).copy()
 
 
-def rmsnorm(x, w, axis=-1):
+def amar_rmsnorm(x, w, axis=-1):
     return x / np.sqrt(np.mean(x * x, axis=axis, keepdims=True) + EPS) * w
 
 
@@ -72,7 +72,7 @@ VC = {}
 
 def ssm_layer(i, x, pos):
     b = f"blk.{i}."
-    cur = rne(rmsnorm(x, T(b + "attn_norm.weight", (H,))))
+    cur = rne(amar_rmsnorm(x, T(b + "attn_norm.weight", (H,))))
     qkv = cur @ T(b + "attn_qkv.weight", (H, CONV))
     z = cur @ T(b + "attn_gate.weight", (H, H))
     beta = 1 / (1 + np.exp(-(cur @ T(b + "ssm_alpha.weight", (H, NH_V)) * 0 + cur @ T(b + "ssm_beta.weight", (H, NH_V)))))
@@ -98,19 +98,19 @@ def ssm_layer(i, x, pos):
         Sh = Sh + np.outer(k[h], d)
         o[h] = Sh.T @ q[h]
         SS[h] = Sh
-    gated = rne((rmsnorm(o, T(b + "ssm_norm.weight", (S,))) * silu(z.reshape(NH_V, S))).reshape(H))
+    gated = rne((amar_rmsnorm(o, T(b + "ssm_norm.weight", (S,))) * silu(z.reshape(NH_V, S))).reshape(H))
     return x + gated @ T(b + "ssm_out.weight", (H, H))
 
 
 def attn_layer(i, x, pos):
     b = f"blk.{i}."
-    cur = rne(rmsnorm(x, T(b + "attn_norm.weight", (H,))))
+    cur = rne(amar_rmsnorm(x, T(b + "attn_norm.weight", (H,))))
     qf = (cur @ T(b + "attn_q.weight", (H, 2 * H))).reshape(NQH, 2 * HD)
     q, gate = qf[:, :HD], qf[:, HD:].reshape(H)
     k = (cur @ T(b + "attn_k.weight", (H, NKVH * HD))).reshape(NKVH, HD)
     v = (cur @ T(b + "attn_v.weight", (H, NKVH * HD))).reshape(NKVH, HD)
-    q = yarn_rope(rmsnorm(q, T(b + "attn_q_norm.weight", (HD,))), pos)
-    k = yarn_rope(rmsnorm(k, T(b + "attn_k_norm.weight", (HD,))), pos)
+    q = yarn_rope(amar_rmsnorm(q, T(b + "attn_q_norm.weight", (HD,))), pos)
+    k = yarn_rope(amar_rmsnorm(k, T(b + "attn_k_norm.weight", (HD,))), pos)
     kc = KC.setdefault(i, np.zeros((NKVH, 0, HD), dtype=np.float32))
     vc = VC.setdefault(i, np.zeros((NKVH, 0, HD), dtype=np.float32))
     kc = np.concatenate([kc, k[:, None, :]], axis=1)
@@ -138,12 +138,12 @@ def full_decode(n_gen):
         x = emb[tok].astype(np.float32).copy()
         for i in range(32):
             x = attn_layer(i, x, pos) if (i + 1) % 4 == 0 else ssm_layer(i, x, pos)
-            cur = rne(rmsnorm(x, T(f"blk.{i}.post_attention_norm.weight", (H,))))
+            cur = rne(amar_rmsnorm(x, T(f"blk.{i}.post_attention_norm.weight", (H,))))
             gt = cur @ T(f"blk.{i}.ffn_gate.weight", (H, FFN))
             up = cur @ T(f"blk.{i}.ffn_up.weight", (H, FFN))
             act = rne(silu(gt) * up)
             x = x + act @ T(f"blk.{i}.ffn_down.weight", (FFN, H))
-        logits = rne(rmsnorm(x, on)) @ T("output.weight", (H, 248320))
+        logits = rne(amar_rmsnorm(x, on)) @ T("output.weight", (H, 248320))
         nxt = int(np.argmax(logits))
         if pos >= len(prompt) - 1:
             generated.append(nxt)
@@ -165,7 +165,7 @@ def main():
         else:
             x = ssm_layer(i, x, 0)
         # ffn
-        cur = rne(rmsnorm(x, T(f"blk.{i}.post_attention_norm.weight", (H,))))
+        cur = rne(amar_rmsnorm(x, T(f"blk.{i}.post_attention_norm.weight", (H,))))
         gt = cur @ T(f"blk.{i}.ffn_gate.weight", (H, FFN))
         up = cur @ T(f"blk.{i}.ffn_up.weight", (H, FFN))
         act = rne(silu(gt) * up)
