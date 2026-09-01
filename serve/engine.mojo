@@ -438,6 +438,8 @@ def main() raises:
     # the state a rejected token would have to roll back to.
     var ring = 0
     var pos = 0
+    var t_prefill_end = t0
+    var prefill_done = False
     while pos < n_total - 1:
         var m = 1
         if pos + 1 < len(prompt):
@@ -641,6 +643,10 @@ def main() raises:
                 ctx.enqueue_function[g_head_v](CurBm, Whead, Pv, Int32(m), Int32(VOCAB), Int32(H), grid_dim=(ceildiv(VOCAB, SBN2), SPLITK), block_dim=SK_THREADS)
             ctx.enqueue_function[r_head](Pv, Logitsm, Int32(m), Int32(VOCAB), grid_dim=ceildiv(m * VOCAB, 256), block_dim=256)
             ctx.enqueue_function[argmax_k](Logitsm, Toks, Int32(VOCAB), Int32(pos + 1), grid_dim=m, block_dim=256)
+            if not prefill_done:
+                ctx.synchronize()
+                t_prefill_end = perf_counter_ns()
+                prefill_done = True
 
         # advance by the window width; once verify lands this becomes the
         # accepted-token count, which is what makes rollback free.
@@ -656,7 +662,10 @@ def main() raises:
     var generated = List[Int]()
     for i in range(len(prompt), n_total):
         generated.append(Int(toks_h[i]))
+    var prefill_s = Float64(t_prefill_end - t0) / 1e9
+    var decode_s = dt - prefill_s
     print("tokens:", len(generated), " total_s:", dt, " tok/s:", Float64(GEN_N) / dt)
+    print("prefill_s:", prefill_s, " decode_s:", decode_s, " tok/s_total:", Float64(GEN_N) / dt, " tok/s_gen:", Float64(GEN_N - 1) / decode_s)
     var line = String("")
     for i in range(len(generated)):
         line += String(generated[i]) + " "
