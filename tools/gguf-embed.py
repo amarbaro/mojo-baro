@@ -9,6 +9,7 @@ region so only the header padding changes.
 
 Usage: tools/gguf-embed.py SRC.gguf DST.gguf kernels/*.mojo
 """
+import os
 import struct
 import subprocess
 import sys
@@ -40,6 +41,8 @@ def main():
     new_kv = [("baro.kernel.arch", "gfx1100"),
               ("baro.kernel.commit", commit),
               ("baro.kernel.files", ",".join(k.name for k in kfiles))]
+    if os.environ.get("BARO_KERNEL_PARENT"):
+        new_kv.append(("baro.kernel.parent", os.environ["BARO_KERNEL_PARENT"]))
     for k in kfiles:
         new_kv.append((f"baro.kernel.src.{k.name}", k.read_text()))
 
