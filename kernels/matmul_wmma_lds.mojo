@@ -34,9 +34,9 @@ comptime WMMA_N = 16
 comptime WMMA_K = 16
 
 comptime WARPS_M = 4
-comptime WARPS_N = 4
-comptime WTILE_M = 2  # 16x16 tiles per warp, M direction
-comptime WTILE_N = 1
+comptime WARPS_N = 2
+comptime WTILE_M = 2
+comptime WTILE_N = 4
 
 comptime BLK_M = WARPS_M * WTILE_M * WMMA_M
 comptime BLK_N = WARPS_N * WTILE_N * WMMA_N

@@ -46,3 +46,22 @@ dominates), so cool cores there are duty cycle, not a measurement artefact.
 | 512^3 | 128x64x16 | 4x4 | 2x1 | 8x4 | 512 | 9158 | 14293 |
 | 2048^3 | 128x64x16 | 4x4 | 2x1 | 32x16 | 512 | 26800 | 39881 |
 | 4096^3 | 128x64x16 | 4x4 | 2x1 | 64x32 | 512 | 26632 | 42733 |
+
+### Step 2 receipt, sweep at 4096^3 (72 configs, `bench/sweep-wmma.jsonl` rows with size=4096)
+
+**Sweep defect caught by the P1 receipt.** The kernel's `WTILE_M` line carried a
+trailing comment, so `sweep.py`'s `^comptime WTILE_M = \d+$` never matched and
+WTILE_M silently stayed at 2 for every config. The sweep's labels "WTILE 1x4" and
+"4x4" are all really 2x4; the 4096 rows in `sweep-wmma.jsonl` from 2026-09-01
+must be read with WTILE_M := 2. Standalone re-run of the labelled winner (1x4)
+gave 49.9k vs the sweep's 66.2k; with WTILE_M=2 it reproduces (66.2k, 65.3k).
+Regex now tolerates trailing comments.
+
+Winner: WARPS 4x2, WTILE 2x4 (128x128 tile, 256 threads). Every top-9 config has
+WTILE_N=4 -- B-fragment reuse across four mma per LDS read was the lever.
+
+| size | blk | warps | wtile | grid | block | step 1 | step 2 |
+|---|---|---|---|---|---|---|---|
+| 512^3 | 128x128x16 | 4x2 | 2x4 | 4x4 | 256 | 14293 | 10948 (-23%, 16 blocks; exceeds the 10% allowance, noted) |
+| 2048^3 | 128x128x16 | 4x2 | 2x4 | 16x16 | 256 | 39881 | 56593 (1.42x) |
+| 4096^3 | 128x128x16 | 4x2 | 2x4 | 32x32 | 256 | 42733 | 66197 (1.55x) |

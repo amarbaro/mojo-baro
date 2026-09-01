@@ -65,7 +65,7 @@ def wmma_combos():
 def patch(SRC, **vals):
     text = SRC.read_text()
     for k, v in vals.items():
-        text = re.sub(rf"^comptime {k} = \d+$", f"comptime {k} = {v}", text, flags=re.M)
+        text = re.sub(rf"^comptime {k} = \d+\s*(#.*)?$", f"comptime {k} = {v}", text, flags=re.M)
     SRC.write_text(text)
 
 
