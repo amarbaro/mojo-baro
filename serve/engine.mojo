@@ -20,7 +20,8 @@ from elementwise import (
     amar_rmsnorm, amar_rmsnorm_cast, amar_embed_lookup_pos, amar_argmax_pos, amar_tok_copy,
 )
 from matmul_skinny import (
-    amar_matmul_skinny_m1, amar_matmul_skinny_v2, amar_skinny_reduce, amar_skinny_reduce_add,
+    amar_matmul_skinny_m1,
+    amar_matmul_skinny_m1_dual, amar_matmul_skinny_v2, amar_skinny_reduce, amar_skinny_reduce_add,
     amar_skinny_reduce_swiglu_bf16, SM, SBN, SPLITK, SK_THREADS,
 )
 from ssm import (
@@ -374,6 +375,7 @@ def main() raises:
     comptime g_kv_1 = amar_matmul_skinny_m1[bf16, CPT, type_of(xm_layout), type_of(w_h_kv), type_of(p_kv)]
     comptime g_32_1 = amar_matmul_skinny_m1[bf16, CPT, type_of(xm_layout), type_of(w_h_32), type_of(p_32)]
     comptime g_ffn_1 = amar_matmul_skinny_m1[bf16, CPT, type_of(xm_layout), type_of(w_h_ffn), type_of(p_ffn)]
+    comptime g_ffn_1d = amar_matmul_skinny_m1_dual[bf16, CPT, type_of(xm_layout), type_of(w_h_ffn), type_of(p_ffn)]
     comptime g_down_1 = amar_matmul_skinny_m1[bf16, CPT, type_of(ffnm_layout), type_of(w_ffn_h), type_of(p_h)]
     comptime g_head_1 = amar_matmul_skinny_m1[bf16, CPT, type_of(xm_layout), type_of(w_h_v), type_of(p_v)]
 
@@ -638,8 +640,7 @@ def main() raises:
             var Ph2 = TileTensor(p_h_d, p_h)
             var FgBm = TileTensor(fgb_d, ffnm_layout)
             if m == 1:
-                ctx.enqueue_function[g_ffn_1](CurBm, Wfg, Pg, Int32(m), Int32(FFN), Int32(H), grid_dim=(ceildiv(FFN, SBN2), SPLITK), block_dim=SK_THREADS)
-                ctx.enqueue_function[g_ffn_1](CurBm, Wfu, Pu, Int32(m), Int32(FFN), Int32(H), grid_dim=(ceildiv(FFN, SBN2), SPLITK), block_dim=SK_THREADS)
+                ctx.enqueue_function[g_ffn_1d](CurBm, Wfg, Wfu, Pg, Pu, Int32(1), Int32(FFN), Int32(H), grid_dim=(ceildiv(FFN, SBN2), SPLITK), block_dim=SK_THREADS)
             else:
                 ctx.enqueue_function[g_ffn_v](CurBm, Wfg, Pg, Int32(m), Int32(FFN), Int32(H), grid_dim=(ceildiv(FFN, SBN2), SPLITK), block_dim=SK_THREADS)
                 ctx.enqueue_function[g_ffn_v](CurBm, Wfu, Pu, Int32(m), Int32(FFN), Int32(H), grid_dim=(ceildiv(FFN, SBN2), SPLITK), block_dim=SK_THREADS)
