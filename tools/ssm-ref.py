@@ -75,8 +75,8 @@ def main():
     v = conv_out[2 * KDIM :].reshape(NH_V, S)
     q = q / np.sqrt(np.sum(q * q, axis=1, keepdims=True) + EPS)
     k = k / np.sqrt(np.sum(k * k, axis=1, keepdims=True) + EPS)
-    q = np.repeat(q, NH_V // NH_K, axis=0) / np.sqrt(S)
-    k = np.repeat(k, NH_V // NH_K, axis=0)
+    q = np.tile(q, (NH_V // NH_K, 1)) / np.sqrt(S)
+    k = np.tile(k, (NH_V // NH_K, 1))
 
     o = np.zeros((NH_V, S), dtype=np.float32)
     S1 = np.zeros_like(S0)

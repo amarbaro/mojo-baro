@@ -270,3 +270,95 @@ text-only decode per point 3 above).
 ssm.conv_kernel=4, ssm.state_size=128, ssm.group_count=16, ssm.time_step_rank=32,
 ssm.inner_size=4096, full_attention_interval=4 (every 4th layer, 1-indexed, is full attn:
 `(i+1) % 4 != 0` marks recurrent layers, i.e. layers 0,1,2 recurrent, layer 3 full-attn, repeat).
+
+## 7c. Chain-divergence checks
+
+**Q1 — v-head→k/q-head index mapping (delta-net path).**
+
+Call site: `/home/mario/llama.cpp/src/models/qwen35.cpp:443-444` —
+`q_conv = ggml_repeat_4d(ctx0, q_conv, head_k_dim, num_v_heads, n_seq_tokens, n_seqs);`
+(same for `k_conv`, line 444). Source `q_conv`/`k_conv` shape before the call:
+`[head_k_dim, num_k_heads=16, n_seq_tokens, n_seqs]` (view at
+`qwen35.cpp:408-418`); dst shape `[head_k_dim, num_v_heads=32, n_seq_tokens, n_seqs]`
+— i.e. **ne1 (head dim) is the repeated dim, 16→32, nr1=2.**
+
+`ggml_compute_forward_repeat_f32` semantics
+(`/home/mario/llama.cpp/ggml/src/ggml-cpu/ops.cpp:1696-1740`): nested loop is
+`for i1 in 0..nr1: for k1 in 0..ne01: dst[i1*ne01+k1] = src[k1]` (ops.cpp:1727-1732).
+This is **block/tile repeat, not element-wise repeat**: for nr1=2, ne01=16, dst
+index range 0..15 (i1=0) copies src 0..15, then dst index range 16..31 (i1=1)
+copies src 0..15 again. So **dst head `h` reads src head `h % 16`** — pattern
+`0,1,...,15,0,1,...,15`, NOT `0,0,1,1,...` (which would require element-wise
+repeat with `k1` outer / `i1` inner — that is not what this loop does; `i1`
+(the repeat-copy index) is the *outer* loop, `k1` (the source index) is *inner*).
+
+**Answer: v-head `h` uses k/q-head `h % 16` (tiling), confirmed by
+`ggml_repeat_4d`'s literal loop order at ops.cpp:1723-1739.**
+
+(Aside: `qwen3next.cpp:531-533` uses a different reshape — `head_k_dim,
+repeat_factor, num_k_heads, ...` with `repeat_factor` as its own explicit ne1
+dim before `num_k_heads` — that is an interleave-by-construction, not a
+`ggml_repeat_4d` tile; different call shape, not directly comparable to
+qwen35's mapping above.)
+
+**Full-attention block GQA (16 q-heads, 4 kv-heads) — separate mechanism,
+confirmed grouped (`h // 4`), NOT the tile mapping above.**
+
+`llm_graph_context::build_attn_mha` (`/home/mario/llama.cpp/src/llama-graph.cpp:2541-2607`,
+non-flash branch) does `ggml_mul_mat(ctx0, k, q)` directly — no `ggml_repeat_4d`
+call for the KV heads at all. Broadcast is handled inside
+`ggml_compute_forward_mul_mat_one_chunk`
+(`/home/mario/llama.cpp/ggml/src/ggml-cpu/ops.cpp:1184-1186`):
+`r2 = ne12/ne02` (`ne12`=n_head from q/src1, `ne02`=n_head_kv from k/src0), and
+the row index used is `i02 = i12 / r2` (floor division; confirmed by the
+mul_mat broadcast convention throughout ggml-cpu, `i1x/r2`-style indexing).
+For 16 q-heads / 4 kv-heads, `r2 = 4`, so **q-head `h` maps to kv-head `h / 4`**
+— grouped/contiguous blocks (`0,0,0,0,1,1,1,1,...`), i.e. standard GQA, matching
+llama.cpp convention project-wide. This confirms the two mechanisms use
+*different* index arithmetic: delta-net's `ggml_repeat_4d` tiles (mod), the
+full-attention mul_mat broadcast groups (floor-div) — do not assume they match.
+
+**Q2 — YaRN `rope_ext_factor`/`rope_attn_factor` defaulting for qwen35.**
+
+GGUF hparam load (`/home/mario/llama.cpp/src/llama-model.cpp:1307-1322`):
+- `rope_scaling.type` read as string, defaults `"linear"` if absent
+  (line 1307-1309).
+- `hparams.rope_attn_factor` (field default `1.0f`,
+  `/home/mario/llama.cpp/src/llama-hparams.h:138`) is read from GGUF key
+  `LLM_KV_ROPE_SCALING_ATTN_FACTOR` with `required=false`
+  (`llama-model.cpp:1321`) — **if the GGUF carries no
+  `rope.scaling.attn_factor` key (qwen35's case), it stays at the struct
+  default `1.0f`.**
+- There is no `hparams.rope_ext_factor` field at all — `llama-hparams.h` only
+  has `yarn_ext_factor = -1.0f` (default sentinel, line 148) and
+  `yarn_attn_factor = 1.0f` (line 149), which are separate from
+  `rope_attn_factor` and are NOT loaded from GGUF metadata; they live on
+  `llama_context_params` / `cparams`, resolved at context-creation time.
+
+Resolution logic (`/home/mario/llama.cpp/src/llama-context.cpp`):
+- `cparams.yarn_ext_factor = params.yarn_ext_factor >= 0.0f ? params.yarn_ext_factor : hparams.yarn_ext_factor;` (line 113) — since `hparams.yarn_ext_factor` itself is never set from GGUF (no such field/key), it stays at its own default; the effective "unset" sentinel is `< 0.0f`.
+- `cparams.yarn_attn_factor` same pattern (line 114), falling back to `hparams.yarn_attn_factor = 1.0f`.
+- **The exact style logic requested:** `llama-context.cpp:172-173` —
+  `if (cparams.yarn_ext_factor < 0.0f) { cparams.yarn_ext_factor = rope_scaling_type == LLAMA_ROPE_SCALING_TYPE_YARN ? 1.0f : 0.0f; }`
+  — i.e. **`rope_ext_factor` (as `cparams.yarn_ext_factor`) defaults to `1.0f`
+  when `rope_scaling_type == YARN` (qwen35's declared scaling type) and `0.0f`
+  otherwise**, exactly matching the pattern in the question.
+- `cparams.yarn_attn_factor` is then further scaled (`llama-context.cpp:176-213`)
+  when `yarn_ext_factor != 0`: computed via `get_mscale(factor, mscale)` (NTK
+  by-parts mscale terms, if `mscale`/`mscale_all_dims` GGUF keys present) or a
+  plain `get_mscale(factor, 1.0f)` fallback, then further multiplied by
+  `1.0f / (1.0f + 0.1f * logf(factor))` (line 210) to cancel double-application,
+  and finally multiplied by `hparams.rope_attn_factor` (line 213) — so the final
+  `attn_factor` used in `ggml_rope_ext` calls is a composite, not simply `1.0`,
+  whenever `ext_factor != 0` (true for qwen35 since `rope_scaling_type==YARN`).
+
+**Attention softmax scale (`kq_scale`) for qwen35 full-attention blocks:**
+`/home/mario/llama.cpp/src/models/qwen35.cpp:320` and `:595-596` —
+```
+const float kq_scale = hparams.f_attention_scale == 0.0f
+        ? 1.0f / sqrtf(float(n_embd_head)) : hparams.f_attention_scale;
+```
+i.e. falls back to the standard `1/sqrt(n_embd_head)` unless the GGUF supplies
+a nonzero `attention.scale` override (used by some yarn-scaled/muP-style
+configs) — confirms the question's stated default holds when
+`attention.scale` is absent/zero in the GGUF.

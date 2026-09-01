@@ -140,7 +140,7 @@ def ssm_delta_step[
     comptime assert Eg.flat_rank == 1 and O.flat_rank == 2
     var h = block_idx.x
     var j = thread_idx.x
-    var kh = h // (NH_V // NH_K)
+    var kh = h % NH_K
 
     var kq = stack_allocation[f32, address_space = AddressSpace.SHARED](
         row_major[2, SSTATE]()
