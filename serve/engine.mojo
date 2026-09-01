@@ -9,6 +9,7 @@ greedy token ids.
 Parity target: byte-identical token ids vs llama.cpp on the same GGUF.
 """
 from std.math import ceildiv
+from std.os import getenv
 from std.sys import has_accelerator
 from std.time import perf_counter_ns
 
@@ -439,6 +440,15 @@ def main() raises:
     var ring = 0
     var pos = 0
     var t_prefill_end = t0
+    # BARO_PROFILE=1: synchronize at sub-block boundaries and attribute GPU
+    # time to attn / ssm / ffn / head. Off by default; the timed path is
+    # untouched.
+    var prof = getenv("BARO_PROFILE", "0") == "1"
+    var pf_att = 0
+    var pf_ssm = 0
+    var pf_ffn = 0
+    var pf_head = 0
+    var tp = t0
     var prefill_done = False
     while pos < n_total - 1:
         var m = 1
@@ -454,6 +464,9 @@ def main() raises:
         var ssm_i = 0
         var att_i = 0
         for layer in range(N_LAYERS):
+            if prof:
+                ctx.synchronize()
+                tp = perf_counter_ns()
             # -- attention / ssm sub-block --
             ctx.enqueue_function[rmsc_k](
                 Xm, tens_f32(ctx, wbuf, off[w], H, h_layout), CurBm,
@@ -604,6 +617,14 @@ def main() raises:
                 ssm_i += 1
                 w += 10
 
+            if prof:
+                ctx.synchronize()
+                var now = perf_counter_ns()
+                if is_attn(layer):
+                    pf_att += Int(now - tp)
+                else:
+                    pf_ssm += Int(now - tp)
+                tp = now
             # -- ffn sub-block --
             ctx.enqueue_function[rmsc_k](
                 Xm, tens_f32(ctx, wbuf, off[w], H, h_layout), CurBm,
@@ -629,8 +650,16 @@ def main() raises:
                 ctx.enqueue_function[g_down_v](FgBm, Wfd, Ph2, Int32(m), Int32(H), Int32(FFN), grid_dim=(ceildiv(H, SBN2), SPLITK), block_dim=SK_THREADS)
             ctx.enqueue_function[r_add](Ph2, Xm, Int32(m), Int32(H), grid_dim=ceildiv(m * H, 256), block_dim=256)
             w += 4
+            if prof:
+                ctx.synchronize()
+                var now = perf_counter_ns()
+                pf_ffn += Int(now - tp)
+                tp = now
 
         # -- head --
+        if prof:
+            ctx.synchronize()
+            tp = perf_counter_ns()
         if pos + m >= len(prompt):
             ctx.enqueue_function[rmsc_k](
                 Xm, tens_f32(ctx, wbuf, off[w], H, h_layout), CurBm,
@@ -655,6 +684,9 @@ def main() raises:
                 ctx.synchronize()
                 t_prefill_end = perf_counter_ns()
                 prefill_done = True
+            if prof:
+                ctx.synchronize()
+                pf_head += Int(perf_counter_ns() - tp)
 
         # advance by the window width; once verify lands this becomes the
         # accepted-token count, which is what makes rollback free.
@@ -665,6 +697,12 @@ def main() raises:
     ctx.synchronize()
     var dt = Float64(perf_counter_ns() - t0) / 1e9
     print("host_enqueue_s:", t_host, " gpu_total_s:", dt)
+    if prof:
+        var tot = Float64(pf_att + pf_ssm + pf_ffn + pf_head)
+        print("profile: attn", Float64(pf_att) / 1e9, Float64(pf_att) / tot)
+        print("profile: ssm", Float64(pf_ssm) / 1e9, Float64(pf_ssm) / tot)
+        print("profile: ffn", Float64(pf_ffn) / 1e9, Float64(pf_ffn) / tot)
+        print("profile: head", Float64(pf_head) / 1e9, Float64(pf_head) / tot)
     ctx.enqueue_copy(dst_buf=toks_h, src_buf=toks_d)
     ctx.synchronize()
     var generated = List[Int]()
