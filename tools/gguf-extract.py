@@ -104,6 +104,11 @@ def main():
         # dims are innermost-first; logical (torch) shape is reversed
         shape = list(reversed(dims))
         meta[name] = {"file": f"{safe}.bin", "shape": shape, "type": tname}
+        if tname == "bf16" and len(shape) == 2:
+            w16_t = np.frombuffer(raw, dtype=np.uint16).reshape(shape)
+            (out_dir / f"{safe}.t.bin").write_bytes(
+                np.ascontiguousarray(w16_t.T).tobytes()
+            )
         if ref_m and tname == "bf16" and len(shape) == 2:
             out_f, in_f = shape  # W is [out, in] row-major
             w16 = np.frombuffer(raw, dtype=np.uint16).reshape(out_f, in_f)
@@ -113,9 +118,6 @@ def main():
             a16 = (a32.view(np.uint32) >> 16).astype(np.uint16)  # truncate to bf16
             a32t = (a16.astype(np.uint32) << 16).view(np.float32)
             c32 = a32t @ w32.T  # [M, out]
-            (out_dir / f"{safe}.t.bin").write_bytes(
-                np.ascontiguousarray(w16.T).tobytes()
-            )
             (out_dir / f"{safe}.a.bin").write_bytes(a16.tobytes())
             (out_dir / f"{safe}.c.bin").write_bytes(c32.astype(np.float32).tobytes())
             meta[name]["ref_m"] = ref_m
