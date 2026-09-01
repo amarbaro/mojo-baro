@@ -81,3 +81,26 @@ B-layout 517 GB/s (54%); q8b only 344 GB/s effective on its byte stream —
 dequant ALU + per-32 scale reload eats most of the byte win. Beating the
 vendor cold requires raising bandwidth efficiency (multi-column per
 thread, wider loads), not shrinking bytes further. No beat-vendor claim.
+
+## v3 — multi-column/thread B-layout skinny (frozen before first run)
+
+Question: does widening each thread from 1 column (2 B/load) to CPT
+contiguous columns (2*CPT B vector load) close the bf16 B-layout gap
+(517 GB/s, 54% of peak) toward the vendor's 812 GB/s (85%)?
+
+Instrument: same bench_coldcache rotation (NBUF=8, 1 s warm, 200
+timed, 10 repeats), arms = v1 (194–196 us baseline), v2 CPT=2, CPT=4,
+CPT=8, plus hipblaslt f16 reference. Same A/W tensors, same reduce.
+
+Frozen predictions:
+1. Spread per arm < 1.5% of mean, else no claim.
+2. Best CPT arm: 130–165 us (64–80% of peak). Mechanism: same
+   coalesced footprint but 4x fewer load instructions and 4x fewer
+   resident columns per wave -> better MALL/latency hiding.
+3. CPT=8 regresses vs CPT=4 (32 accumulator lanes ok, 64 collapses
+   occupancy — the "many resident waves" rule).
+4. Falsifier: if best v2 arm >= 185 us, wide loads are not the
+   bottleneck on this pattern and item-6 must move to
+   split-K/grid-shape changes instead.
+Claim rule: engine adoption only if the winning arm beats v1 by
+>= 10% AND the engine token gate stays 16/16.
