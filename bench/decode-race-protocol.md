@@ -44,6 +44,24 @@ running during server arms).
 3. Ours (25.5) trails arm B by 1.3–1.9x; the gap is launch count
    (~20 launches/layer at M=1), not GEMM bandwidth.
 
+## Verdict (2026-09-01, run after freeze at `adbb48c`)
+
+- **Arm A (MTP on): 109.8 tok/s** (median of 4; 109.6–110.4, spread
+  0.7%). Draft acceptance 52/62 = 84% every run. ABOVE the predicted
+  45–100 band — MTP multiplier is 2.49x over arm B, past the frozen
+  2.2x cap. Prediction 2 missed high.
+- **Arm B (no MTP): 44.1 tok/s** (median of 4; spread 0.2%). Inside
+  the predicted 32–48 band; 82% of the 53.6 tok/s HBM roof. First
+  arm-B attempt (39.7, spread 11.6%) VOIDED by the spread rule —
+  taken immediately after model load, clocks/cache cold; a clean
+  repeat converged.
+- Per-request `speculative.n_max: 0` was IGNORED by this server
+  build (draft_n unchanged); arm B required the controlled restart.
+  Original cmdline restored and health-checked after.
+- Ours 25.5 → trails arm B 1.73x (inside predicted 1.3–1.9x) and
+  arm A 4.3x. The bar for M5: **44.1 (kernel race) / 109.8 (with
+  MTP, item 5's target)**.
+
 ## Claim rule
 
 Only medians produced by this exact procedure may be recorded as
