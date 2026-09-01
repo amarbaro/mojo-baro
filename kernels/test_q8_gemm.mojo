@@ -23,7 +23,8 @@ from layout import TileTensor, row_major
 
 from elementwise import swiglu
 from matmul_skinny import (
-    matmul_skinny_wt, matmul_skinny_q8, skinny_reduce, skinny_reduce_swiglu,
+    matmul_skinny_wt, matmul_skinny_q8, matmul_skinny_q8b,
+    skinny_reduce, skinny_reduce_swiglu,
     SM, SBN, SPLITK, SK_THREADS, Q8_BLOCK,
 )
 
@@ -35,6 +36,8 @@ comptime ITERS = 200
 comptime a_layout = row_major[M, K]()
 comptime w_layout = row_major[N, K]()
 comptime s_layout = row_major[N, K // Q8_BLOCK]()
+comptime qt_layout = row_major[K, N]()
+comptime st_layout = row_major[K // Q8_BLOCK, N]()
 comptime c_layout = row_major[M, N]()
 comptime cf_layout = row_major[M * N]()
 comptime p_layout = row_major[SPLITK, SM, N]()
@@ -160,6 +163,46 @@ def main() raises:
     print("q8 parity max_rel:", worst)
     if worst > 1e-2:
         raise Error("q8 parity failure")
+
+    # --- 1b. q8b (K-major) parity on gate ---
+    var qtg_host = ctx.enqueue_create_host_buffer[DType.int8](N * K)
+    var stg_host = ctx.enqueue_create_host_buffer[f32](N * K // Q8_BLOCK)
+    ctx.synchronize()
+    load_into(base_g + ".qt.bin", qtg_host.unsafe_ptr().unsafe_bitcast[UInt8](), N * K)
+    load_into(base_g + ".scales_t.bin", stg_host.unsafe_ptr().unsafe_bitcast[UInt8](), N * K // Q8_BLOCK * 4)
+    var qtg_dev = ctx.enqueue_create_buffer[DType.int8](N * K)
+    var stg_dev = ctx.enqueue_create_buffer[f32](N * K // Q8_BLOCK)
+    ctx.enqueue_copy(dst_buf=qtg_dev, src_buf=qtg_host)
+    ctx.enqueue_copy(dst_buf=stg_dev, src_buf=stg_host)
+    ctx.synchronize()
+    var Qtg = TileTensor(qtg_dev, qt_layout)
+    var Stg = TileTensor(stg_dev, st_layout)
+    comptime skinny_q8b = matmul_skinny_q8b[
+        type_of(a_layout), type_of(qt_layout), type_of(st_layout), type_of(p_layout)
+    ]
+    ctx.enqueue_function[skinny_q8b](
+        A, Qtg, Stg, Pg, Int32(M), Int32(N), Int32(K),
+        grid_dim=SGRID, block_dim=SK_THREADS,
+    )
+    ctx.enqueue_function[reduce](
+        Pg, C, Int32(M), Int32(N), grid_dim=RED_GRID, block_dim=256
+    )
+    ctx.enqueue_copy(dst_buf=c_host, src_buf=c_dev)
+    ctx.synchronize()
+    worst = 0
+    for i in range(M * N):
+        var e = abs(Float64(c_host[i]) - Float64(ref_g[unsafe_offset=i])) / (
+            abs(Float64(ref_g[unsafe_offset=i])) + 1e-3
+        )
+        worst = max(worst, e)
+    print("q8b (K-major) parity max_rel:", worst)
+    if worst > 1e-2:
+        raise Error("q8b parity failure")
+    ctx.enqueue_function[skinny_q8](
+        A, Qg, Sg, Pg, Int32(M), Int32(N), Int32(K),
+        grid_dim=SGRID, block_dim=SK_THREADS,
+    )
+    ctx.synchronize()
 
     # --- 2. fused swiglu epilogue vs unfused three-launch path ---
     ctx.enqueue_function[reduce_swiglu](

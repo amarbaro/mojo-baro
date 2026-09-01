@@ -46,3 +46,22 @@ work. B-layout reaches ~519 GB/s (54% peak). Decision: engine loader
 transposes weights once at load; wt kernels remain for transpose-unaffordable
 cases only. q8 must be re-laid-out K-major (B-layout blocks) before its
 byte advantage can show; re-preregister before claiming.
+
+# Protocol v2 — K-major q8 + vendor arm (frozen before first run)
+
+New arms in the same instrument (8 rotating buffers, 10 repeats):
+- `q8b`: K-major q8 (quants [K,N] int8 + scales [K/32,N] fp32, 56.6 MB
+  vs bf16's 100.7 MB), parity-gated at 9.2e-4 before this freeze.
+- `hipblaslt_f16`: vendor tuned GEMM through the shim, fp16 copy of the
+  same transposed weights, same rotation.
+
+## Frozen predictions (v2)
+
+1. Spread per arm < 1.5% of mean, else no claims.
+2. q8b: 105–145 us (byte ratio 0.563 x 194 us = 109 us + dequant ALU).
+3. q8b vs bf16 B-layout: 1.45–1.85x.
+4. hipblaslt_f16: 110–200 us (vendor should exceed our 54%-of-peak).
+5. "Beat vendor" claimed only if the q8b range sits strictly below the
+   vendor range. Disclosed asymmetry: q8-vs-f16 is a product-level
+   comparison (different dtypes); the like-for-like lane is
+   bf16-B vs hipblaslt_f16.

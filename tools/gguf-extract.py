@@ -133,6 +133,13 @@ def main():
                 (out_dir / f"{safe}.scales.bin").write_bytes(
                     scale.astype(np.float32).tobytes()
                 )
+                # K-major (B-layout) copies: quants [K, N], scales [K/32, N]
+                (out_dir / f"{safe}.qt.bin").write_bytes(
+                    np.ascontiguousarray(q.reshape(out_f, in_f).T).tobytes()
+                )
+                (out_dir / f"{safe}.scales_t.bin").write_bytes(
+                    np.ascontiguousarray(scale.astype(np.float32).T).tobytes()
+                )
                 (out_dir / f"{safe}.cq.bin").write_bytes(
                     cq.astype(np.float32).tobytes()
                 )

@@ -255,6 +255,79 @@ def matmul_skinny_q8[
             Cp[block_idx.y, i, col] = rebind[Cp.ElementType](acc[i])
 
 
+def matmul_skinny_q8b[
+    ALayout: TensorLayout, QLayout: TensorLayout, SLayout: TensorLayout,
+    PLayout: TensorLayout
+](
+    A: TileTensor[DType.bfloat16, ALayout, MutAnyOrigin],
+    Bq: TileTensor[DType.int8, QLayout, MutAnyOrigin],
+    Bs: TileTensor[dtype, SLayout, MutAnyOrigin],
+    Cp: TileTensor[dtype, PLayout, MutAnyOrigin],
+    m: Int32,
+    n: Int32,
+    k_dim: Int32,
+):
+    """q8 in K-major (B) layout: quants [K, N] int8, scales [K/32, N] fp32.
+
+    Reads coalesce across threads exactly like the bf16 B-layout kernel;
+    the weight stream is 1.19 B/elem instead of 2.
+    """
+    comptime assert A.flat_rank == 2 and Bq.flat_rank == 2
+    comptime assert Bs.flat_rank == 2 and Cp.flat_rank == 3
+
+    var M = Int(m)
+    var N = Int(n)
+    var K = Int(k_dim)
+
+    var tid = thread_idx.x
+    var col = block_idx.x * SBN + tid
+
+    var kslice = (K + SPLITK - 1) // SPLITK
+    var k0 = block_idx.y * kslice
+    var k1 = min(k0 + kslice, K)
+
+    var sa = stack_allocation[dtype, address_space=AddressSpace.SHARED](
+        row_major[KCHUNK, SM]()
+    )
+    var sav = sa.vectorize[1, SM]()
+    comptime assert sav.flat_rank == 2
+
+    var acc = SIMD[dtype, SM](0)
+
+    var kk = k0
+    while kk < k1:
+        var clen = min(KCHUNK, k1 - kk)
+
+        comptime for i in range(SM * KCHUNK // SK_THREADS):
+            var e = tid + i * SK_THREADS
+            var r = e // KCHUNK
+            var kc = e % KCHUNK
+            var g = kk + kc
+            sa[kc, r] = rebind[sa.ElementType](
+                rebind[Scalar[DType.bfloat16]](A[r, g]).cast[
+                    dtype
+                ]() if r < M and kc < clen else 0
+            )
+        barrier()
+
+        if col < N:
+            for blk in range(clen // Q8_BLOCK):
+                var kb = kk + blk * Q8_BLOCK
+                var scale = rebind[Scalar[dtype]](Bs[kb // Q8_BLOCK, col])
+                comptime for j in range(Q8_BLOCK):
+                    var q = rebind[Scalar[DType.int8]](Bq[kb + j, col])
+                    var a_vec = rebind[SIMD[dtype, SM]](
+                        sav[blk * Q8_BLOCK + j, 0]
+                    )
+                    acc += a_vec * (q.cast[dtype]() * scale)
+        barrier()
+        kk += KCHUNK
+
+    if col < N:
+        comptime for i in range(SM):
+            Cp[block_idx.y, i, col] = rebind[Cp.ElementType](acc[i])
+
+
 def skinny_reduce_swiglu[
     PLayout: TensorLayout, CLayout: TensorLayout
 ](
