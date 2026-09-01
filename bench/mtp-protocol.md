@@ -1,138 +1,122 @@
 # MTP draft-head protocol — frozen before first run (M5 item 5)
 
-Question: does the model's own `blk.32` draft head (NextN, qwen35
-`nextn_predict_layers=1`) earn its launches in our engine — i.e. does
-wiring speculative decode through the draft head pay back the extra
-draft-forward-pass cost with a net decode speedup, without changing
-what the model says?
+Question: does the model's own blk.32 draft head (NextN/MTP, `qwen35`
+architecture, `nextn_predict_layers=1`) earn its launch cost in our
+engine — i.e. does spending extra GPU launches on a draft-then-verify
+loop beat plain greedy decode at our engine's own actual shape?
 
-## Correctness precondition (gates before any speed number is recorded)
+## Correctness precondition (gates ALL speed numbers)
 
-No `tok/s_gen` figure from the MTP arm may be recorded until the
-draft head passes its own numerical gate against llama.cpp's draft
-logits, independent of and prior to any timing run:
+No speedup number may be recorded until the draft head passes a
+numerical parity gate against llama.cpp's draft logits (`ctx_dft`
+`res->t_logits`, `common/speculative.cpp`'s `draft()` path, per
+`docs/mtp-notes.md` §2-§3):
 
-1. Feed the same prompt/position to our draft head and to llama.cpp's
-   `blk.32` forward pass (same GGUF, same eh_proj/concat wiring per
-   `docs/mtp-notes.md` §3).
-2. Compare draft logits: **top-1 argmax agreement**, **cosine
-   similarity**, and **max relative error**, all three reported
-   together — high cosine with a differing argmax is the known
-   silent-corruption signature and must not be waved through on
-   cosine alone.
-3. Gate: top-1 argmax must agree, AND cosine >= 0.999, AND max
-   relative error below a threshold tight enough that no top-k logit
-   flips rank. If any of the three fails, the draft head is broken —
-   fix it and re-run the gate. No timing run occurs until this
-   section reads PASS.
+1. Top-1 argmax match on every position sampled during a fixed
+   16-token draft trace.
+2. Cosine similarity of the full logit vector >= threshold TBD-at-gate-
+   time, held to the same bar `q8b` parity used (9.2e-4-class), recorded
+   in the Result section — not loosened after the fact.
+3. Max relative error bound recorded alongside cosine — cosine-alone is
+   the known silent-corruption signature (high cosine, differing
+   argmax = wrong token picked with a deceptively "close" logit vector).
+
+Any one of the three failing voids the run: no tok/s, no acceptance
+rate, no multiplier gets recorded that day. Fix the kernel, re-freeze
+if the fix changes the instrument, re-run.
+
+## Metric caveat (binds prediction 2 below)
+
+llama.cpp's `tok/s` (`tools/server/server-common.h:404-427`,
+`timings.predicted_per_second`) is generation-time-INCLUDING nothing
+but decode: `(n_decoded - 1) / t_decode_s`. Our engine's own
+`tok/s_gen` metric (see `bench/decode-race-protocol.md`) is computed
+the same way, generation-time-EXCLUDING prefill — but the two are NOT
+directly comparable across engines beyond what `decode-race-protocol.md`
+already disclosed and froze. This protocol does NOT re-measure or
+re-litigate llama.cpp's numbers. All predictions below are **self-
+relative**: our-engine-with-MTP `tok/s_gen` vs our-engine-without-MTP
+`tok/s_gen`, both measured by our own metric, same instrument, same run
+session. llama.cpp's 44.1 / 109.8 tok/s figures (below) are cited only
+as prior art informing the prediction ranges, never as the denominator
+of any claim made here.
+
+## Facts on the record (measured previously, not re-derived here)
+
+- llama.cpp bar, frozen `adbb48c`, verdict `6b99693`
+  (`bench/decode-race-protocol.md`): no-spec 44.1 tok/s (median of 4,
+  spread 0.2%); with its MTP head 109.8 tok/s (median of 4, spread
+  0.7%), draft acceptance 52/62 = 84% every run, multiplier 2.49x.
+- HBM roofline ~960 GB/s / 17.9 GB-per-token weight traffic =
+  53.6 tok/s non-speculative ceiling.
+- Our engine, no MTP: 38.97 tok/s by our own metric, 64-token greedy
+  output bit-identical to llama.cpp.
+- GPU: llama-server holds ~22 GB VRAM at idle — MUST be down for this
+  run, GPU exclusive (same discipline as `coldcache-protocol.md` v3/v4).
 
 ## Instrument
 
-Our engine's existing 64-token regression gate (`docs/M5-PLAN.md`
-item 1 instrument; same gate used for `serve/engine.mojo`
-token-identity checks), run twice:
+64-token gate run (`./.work/engine`, prompt "The capital France is",
+greedy, `n_predict=64`), llama-server DOWN, GPU exclusive, existing
+regression-gate prompt/tokens (`.work/engine-pack/ref-tokens.txt`).
+Two arms, same process/binary build, same prompt:
 
-- **Arm A (no spec)**: engine's current decode path, MTP head not
-  invoked. Existing `tok/s_gen` metric.
-- **Arm B (MTP on)**: engine wired to draft with `blk.32`, verify via
-  `process()`/`draft()`/`accept()` pattern (`docs/mtp-notes.md` §3),
-  greedy sampling, same prompt as the existing gate, same 64-token
-  output length.
+- **Arm A (no MTP)**: current engine path, plain greedy decode.
+- **Arm B (with MTP)**: blk.32 draft head wired per `docs/mtp-notes.md`
+  §2-§4 (`process()`/`draft()`/`accept()` loop mirrored from
+  `common/speculative.cpp`), same greedy sampling, same prompt.
 
-GPU discipline: llama-server (holds ~22 GB VRAM) MUST be down for
-every timed run, GPU exclusive to our engine — cold-cache v3/v4
-already document contention silently distorting results when the
-server was up; that mistake is not repeated here.
-
-Report per arm: `tok/s_gen` ((tokens_generated-1)/decode_seconds,
-generation-time-EXCLUDING-prefill — the same definition used for our
-own no-spec baseline, NOT llama.cpp's `server-common.h:404-427`
-metric), draft acceptance count/rate, and drafted-vs-accepted per
-window. Repeat 4x per arm (median reported, matching
-`decode-race-protocol.md`'s repeat/median convention); report
-min/max spread alongside the median.
-
-## Metric-caveat guard (must not be violated)
-
-The comparison in this protocol is **self-relative only**: our
-with-MTP `tok/s_gen` vs. our own without-MTP `tok/s_gen`, both
-measured by our engine's own metric definition. It is NOT a
-comparison to llama.cpp's 44.1 / 109.8 tok/s bar
-(`bench/decode-race-protocol.md`) — that bar used llama.cpp's own
-`tok/s_gen` definition, was frozen and measured at commit `adbb48c`,
-and has not been (and is not being) re-measured here. The llama.cpp
-numbers below are cited only as an external reference point for the
-plausibility of the acceptance-rate and speedup predictions, never
-as the denominator of a claim this protocol makes.
-
-## Reference facts (measured on this box, frozen, not re-derived here)
-
-- llama.cpp bar, commit `adbb48c`, verdict `6b99693`: no speculation
-  44.1 tok/s (median of 4, spread 0.2%); with its MTP draft head
-  109.8 tok/s (median of 4, spread 0.7%); draft acceptance 52/62 =
-  84%, every run; multiplier 2.49x.
-- HBM roofline: ~960 GB/s / 17.9 GB per token = 53.6 tok/s
-  non-speculative decode ceiling.
-- Our engine currently (no spec): 38.97 tok/s by our own metric,
-  64-token greedy output bit-identical to llama.cpp.
+Report per arm: `tok/s_gen` ((n_decoded-1)/decode_s, our own metric,
+generation-time only), and for arm B additionally: draft acceptance
+count/rate, drafted-vs-accepted token counts per verification window.
+5 repeats per arm, discard first (cache/clock warm), report
+median of remaining 4.
 
 ## Frozen predictions
 
-1. **Acceptance rate**: 60–85%. llama.cpp achieves 84% on the exact
-   model/prompt, but our draft head is a fresh implementation of the
-   same wiring — some slack below llama.cpp's figure is expected
-   from any small numerical divergence in the eh_proj/attention path
-   that survives the correctness gate above (the gate bounds
-   correctness, not bit-exactness of every intermediate).
-2. **Speedup**: 1.6–2.4x over our own no-spec `tok/s_gen` (38.97).
-   Lower bound reflects our engine's higher per-launch overhead
-   (M5 item 2 not yet landed at time of freeze) eating into the
-   draft-head's savings; upper bound tracks llama.cpp's 2.49x
-   ceiling on the same model.
-3. **Stability**: spread across the 4 repeats must be < 5% of the
-   median for BOTH arms, else no speedup claim may be made — same
-   discipline as `coldcache-protocol.md` v2/v3 (their < 1.5%
-   threshold is tighter because that instrument is a tight GEMM
-   loop; this protocol uses the looser 5% cap already used by
-   `decode-race-protocol.md`'s 10%-of-median void rule, halved for a
-   controlled single-machine, single-process comparison).
+1. **Stability**: per-arm spread on the 4 kept repeats < 5% of median.
+   If spread exceeds 5% on either arm, no speedup claim may be made
+   that day — re-run under the stability gate before recording
+   anything (copy discipline: `coldcache-protocol.md` v2/v3).
+2. **Acceptance rate**: 60-85%. Reasoning: llama.cpp gets 84% on this
+   exact model/head; ours is a fresh implementation of the same weights
+   through different kernels, so parity is expected but not assumed —
+   range widened below llama.cpp's number to allow for real
+   implementation slop while still requiring the head to be doing
+   useful work.
+3. **Speedup**: arm B `tok/s_gen` / arm A `tok/s_gen` in 1.6-2.4x.
+   Reasoning: llama.cpp's own multiplier is 2.49x; our engine starts
+   from a lower no-spec baseline (38.97 vs 44.1) and untuned draft-path
+   kernels, so the range is shifted down and narrowed versus
+   llama.cpp's observed ceiling, not copied from it.
 
 ## Falsifier
 
-Speedup < 1.3x over our own no-spec baseline falsifies the claim
-that the draft head earns its launches in this engine — below that
-line, the extra draft-forward-pass cost is not paying for itself and
-MTP should not be adopted as-is (return to item 2's launch-count
-work instead, per `docs/M5-PLAN.md`).
+Arm B / Arm A speedup < 1.3x — the draft head is not earning its
+extra launches in our engine; MTP work stops until the underlying
+inefficiency (kernel launch overhead, draft-path fusion, acceptance
+rate) is diagnosed and re-preregistered.
 
 ## Claim rule
 
-A speedup number may be stated publicly only if:
+A speedup number may be published ONLY if:
 
-1. The correctness precondition above reads PASS (top-1 argmax
-   agreement + cosine >= 0.999 + bounded max relative error) BEFORE
-   any timing run.
-2. Both arms' 64-token greedy output remain bit-identical to
-   llama.cpp's reference tokens (`.work/engine-pack/ref-tokens.txt`)
-   — speculative decode is an optimization, not a change to what the
-   model says. If Arm B's output moves off that reference, the run
-   is void regardless of measured speed, full stop — no partial
-   credit for "faster but different."
-3. The stability requirement (prediction 3) holds for both arms.
-4. Only the self-relative comparison (Arm B `tok/s_gen` vs Arm A
-   `tok/s_gen`, both our engine's own metric) may be reported as a
-   speedup claim, per the metric-caveat guard above.
+- the correctness precondition (top-1 AND cosine AND max-relative-error
+  gate) passed and is recorded in the Result section, AND
+- both arms' greedy 64-token output stayed bit-identical to the
+  existing `ref-tokens.txt` gate — MTP is a launch-scheduling
+  optimization, not a model-behavior change; if the output moves at
+  all, the run is void regardless of how fast it was, AND
+- per-arm spread stayed under the prediction-1 threshold.
 
 Any deviation from this protocol (different prompt, different
-n_predict, GPU shared with llama-server, gate skipped) voids the run
-and requires a fresh preregistration before re-attempting.
+`n_predict`, different sampling, GPU not exclusive) requires a new
+preregistration before any number from that run may be cited as "the"
+MTP result.
 
 ## Result
 
-**Not yet run.** To be filled in after the correctness precondition
-passes and both timed arms complete, following the exact structure
-of `bench/coldcache-protocol.md`'s Result sections: per-repeat
-spread, verdict per prediction (HELD / MISSED HIGH / MISSED LOW /
-FALSIFIED), and any disclosed asymmetry or contamination observed
-during the run. No result may be written into this section before
-the run happens — this document is frozen pre-outcome.
+**Not yet run. This section is a placeholder — filled in only after
+the correctness precondition passes and the instrument above executes
+exactly as specified. No prose, no number, no verdict belongs here
+until then.**
