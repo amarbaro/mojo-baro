@@ -636,6 +636,14 @@ def main() raises:
                 Xm, tens_f32(ctx, wbuf, off[w], H, h_layout), CurBm,
                 Int32(H), Float32(1e-6), grid_dim=m, block_dim=256,
             )
+            # f32 copy of the post-final-norm hidden state (pre-LM-head), for
+            # the MTP draft head below — only the last window's last row
+            # survives to be used, since MTP drafts off the final trunk token.
+            var Hnm = TileTensor(hn_d, xm_layout)
+            ctx.enqueue_function[rms_m](
+                Xm, tens_f32(ctx, wbuf, off[w], H, h_layout), Hnm,
+                Int32(H), Float32(1e-6), grid_dim=m, block_dim=256,
+            )
             var Whead = tens_bf16(ctx, wbuf, off[w + 1], H * VOCAB, w_h_v)
             if m == 1:
                 ctx.enqueue_function[g_head_1](CurBm, Whead, Pv, Int32(m), Int32(VOCAB), Int32(H), grid_dim=(ceildiv(VOCAB, SBN2), SPLITK), block_dim=SK_THREADS)
@@ -670,3 +678,141 @@ def main() raises:
     for i in range(len(generated)):
         line += String(generated[i]) + " "
     print("GENERATED:", line)
+
+    # =========================================================================
+    # MTP (NextN) draft head, blk.32 — computed and dumped, never consumed.
+    # Trunk decode is finished and its output already copied to host above,
+    # so every scratch buffer below (Xm, CurBm, qf/q/k/v/ao/resb/fgb, p_*_d,
+    # logits_d, cc_d, hn_d, de_d, dtok_d) is free to reuse. Only kc32_d/vc32_d
+    # (blk.32's own, still-zeroed KV cache) are written; trunk's kc_d/vc_d,
+    # convstate_d, sstate_d and toks_d are left untouched.
+    # =========================================================================
+    var last_tok = generated[len(generated) - 1]
+    var Dtok = TileTensor(dtok_d, dtok_layout)
+    ctx.enqueue_function[tokcp_b](
+        Toks, Dtok, Int32(n_total - 1), Int32(0), Int32(1),
+        grid_dim=1, block_dim=32,
+    )
+
+    # embed(last generated token) via the trunk's token_embd.weight — blk.32
+    # has no embed_tokens tensor of its own (absent from GGUF).
+    var TokEmb = row_f32(ctx, de_d, 0, H, h2_layout)
+    ctx.enqueue_function[embed1_k](
+        Embd, TokEmb, Dtok, Int32(0), Int32(H),
+        grid_dim=(ceildiv(H, 256), 1), block_dim=256,
+    )
+
+    # concat [enorm(tok_embd) | hnorm(h_nextn)] into cc_d, embedding half
+    # first, per docs/mtp-notes.md §2 step 4.
+    var Enorm = tens_f32(ctx, wbuf, off[e + 12], H, h_layout)
+    var Hnorm = tens_f32(ctx, wbuf, off[e + 13], H, h_layout)
+    var CcEmbed = row_bf16(ctx, cc_d, 0, H, h2_layout)
+    var CcH = row_bf16(ctx, cc_d, H, H, h2_layout)
+    var HnRow = row_f32(ctx, hn_d, 0, H, h2_layout)
+    ctx.enqueue_function[rmsc_h2](
+        TokEmb, Enorm, CcEmbed, Int32(H), Float32(1e-6), grid_dim=1, block_dim=256
+    )
+    ctx.enqueue_function[rmsc_h2](
+        HnRow, Hnorm, CcH, Int32(H), Float32(1e-6), grid_dim=1, block_dim=256
+    )
+
+    # eh_proj: [QF] -> [H], gives the residual stream blk.32 runs on.
+    var CcM = TileTensor(cc_d, qfm_layout)
+    var Weh = tens_bf16(ctx, wbuf, off[e + 11], QF * H, w_qf_h)
+    var PhEh = TileTensor(p_h_d, p_h)
+    ctx.enqueue_function[g_eh_1](
+        CcM, Weh, PhEh, Int32(1), Int32(H), Int32(QF),
+        grid_dim=(ceildiv(H, SBN2), SPLITK), block_dim=SK_THREADS,
+    )
+    ctx.enqueue_function[r_h](PhEh, Xm, Int32(1), Int32(H), grid_dim=ceildiv(H, 256), block_dim=256)
+
+    # blk.32 full-attention sub-block (single self-attended token, pos 0,
+    # its own dedicated kc32_d/vc32_d cache).
+    var AttNorm32 = tens_f32(ctx, wbuf, off[e + 0], H, h_layout)
+    ctx.enqueue_function[rmsc_k](Xm, AttNorm32, CurBm, Int32(H), Float32(1e-6), grid_dim=1, block_dim=256)
+
+    var Wq32 = tens_bf16(ctx, wbuf, off[e + 1], H * QF, w_h_qf)
+    var Wk32 = tens_bf16(ctx, wbuf, off[e + 2], H * KV, w_h_kv)
+    var Wv32 = tens_bf16(ctx, wbuf, off[e + 3], H * KV, w_h_kv)
+    var Qn32 = tens_f32(ctx, wbuf, off[e + 4], HD, hd_layout)
+    var Kn32 = tens_f32(ctx, wbuf, off[e + 5], HD, hd_layout)
+    var Wo32 = tens_bf16(ctx, wbuf, off[e + 6], H * H, w_h_h)
+    var Pqf32 = TileTensor(p_qf_d, p_qf)
+    var Pkv32 = TileTensor(p_kv_d, p_kv)
+    var Ph32 = TileTensor(p_h_d, p_h)
+    var Qfm32 = TileTensor(qf_d, qfm_layout)
+    var Q32 = TileTensor(q_d, qm_layout)
+    var Gate32 = TileTensor(gate_d, xflat_layout)
+    var Kflat32 = TileTensor(k_d, kvm_flat)
+    var Khd32 = TileTensor(k_d, kvm_layout)
+    var Vflat32 = TileTensor(v_d, kvm_flat)
+    var Vhd32 = TileTensor(v_d, kvm_layout)
+    var Kc32 = TileTensor(kc32_d, cache_layout)
+    var Vc32 = TileTensor(vc32_d, cache_layout)
+    var Ao32 = TileTensor(ao_d, qm_layout)
+    var Aoflat32 = TileTensor(ao_d, xflat_layout)
+    var AoB32 = TileTensor(resb_d, xflat_layout)
+    var AoBm32 = TileTensor(resb_d, xm_layout)
+
+    ctx.enqueue_function[g_qf_1](CurBm, Wq32, Pqf32, Int32(1), Int32(QF), Int32(H), grid_dim=(ceildiv(QF, SBN2), SPLITK), block_dim=SK_THREADS)
+    ctx.enqueue_function[r_qf](Pqf32, Qfm32, Int32(1), Int32(QF), grid_dim=ceildiv(QF, 256), block_dim=256)
+    ctx.enqueue_function[g_kv_1](CurBm, Wk32, Pkv32, Int32(1), Int32(KV), Int32(H), grid_dim=(ceildiv(KV, SBN2), SPLITK), block_dim=SK_THREADS)
+    ctx.enqueue_function[r_kv](Pkv32, Kflat32, Int32(1), Int32(KV), grid_dim=ceildiv(KV, 256), block_dim=256)
+    ctx.enqueue_function[g_kv_1](CurBm, Wv32, Pkv32, Int32(1), Int32(KV), Int32(H), grid_dim=(ceildiv(KV, SBN2), SPLITK), block_dim=SK_THREADS)
+    ctx.enqueue_function[r_kv](Pkv32, Vflat32, Int32(1), Int32(KV), grid_dim=ceildiv(KV, 256), block_dim=256)
+    ctx.enqueue_function[split_k](Qfm32, Q32, Gate32, grid_dim=(NQH, 1), block_dim=HD)
+    ctx.enqueue_function[hrms_q](Q32, Qn32, Float32(1e-6), grid_dim=NQH, block_dim=HD)
+    ctx.enqueue_function[hrms_kv](Khd32, Kn32, Float32(1e-6), grid_dim=NKVH, block_dim=HD)
+    ctx.enqueue_function[rope_q](Q32, Int32(0), Int32(NQH), grid_dim=(NQH, 1), block_dim=32)
+    ctx.enqueue_function[rope_k](Khd32, Int32(0), Int32(NKVH), grid_dim=(NKVH, 1), block_dim=32)
+    ctx.enqueue_function[append_k](Kc32, Khd32, Int32(0), grid_dim=(NKVH, 1), block_dim=HD)
+    ctx.enqueue_function[append_k](Vc32, Vhd32, Int32(0), grid_dim=(NKVH, 1), block_dim=HD)
+    ctx.enqueue_function[att_k](Q32, Kc32, Vc32, Ao32, Int32(1), Float32(0.0625), grid_dim=(NQH, 1), block_dim=HD)
+    ctx.enqueue_function[gmul_k](Aoflat32, Gate32, AoB32, Int32(H), grid_dim=ceildiv(H, 256), block_dim=256)
+    ctx.enqueue_function[g_h_1](AoBm32, Wo32, Ph32, Int32(1), Int32(H), Int32(H), grid_dim=(ceildiv(H, SBN2), SPLITK), block_dim=SK_THREADS)
+    ctx.enqueue_function[r_add](Ph32, Xm, Int32(1), Int32(H), grid_dim=ceildiv(H, 256), block_dim=256)
+
+    # blk.32 dense SwiGLU FFN sub-block.
+    var PostAttnNorm32 = tens_f32(ctx, wbuf, off[e + 7], H, h_layout)
+    ctx.enqueue_function[rmsc_k](Xm, PostAttnNorm32, CurBm, Int32(H), Float32(1e-6), grid_dim=1, block_dim=256)
+    var Wfg32 = tens_bf16(ctx, wbuf, off[e + 8], H * FFN, w_h_ffn)
+    var Wfu32 = tens_bf16(ctx, wbuf, off[e + 9], H * FFN, w_h_ffn)
+    var Wfd32 = tens_bf16(ctx, wbuf, off[e + 10], FFN * H, w_ffn_h)
+    var Pg32 = TileTensor(p_ffn_d, p_ffn)
+    var Pu32 = TileTensor(p_ffn2_d, p_ffn)
+    var Ph2_32 = TileTensor(p_h_d, p_h)
+    var FgBm32 = TileTensor(fgb_d, ffnm_layout)
+    ctx.enqueue_function[g_ffn_1](CurBm, Wfg32, Pg32, Int32(1), Int32(FFN), Int32(H), grid_dim=(ceildiv(FFN, SBN2), SPLITK), block_dim=SK_THREADS)
+    ctx.enqueue_function[g_ffn_1](CurBm, Wfu32, Pu32, Int32(1), Int32(FFN), Int32(H), grid_dim=(ceildiv(FFN, SBN2), SPLITK), block_dim=SK_THREADS)
+    ctx.enqueue_function[r_swiglu](Pg32, Pu32, FgBm32, Int32(1), Int32(FFN), grid_dim=ceildiv(FFN, 256), block_dim=256)
+    ctx.enqueue_function[g_down_1](FgBm32, Wfd32, Ph2_32, Int32(1), Int32(H), Int32(FFN), grid_dim=(ceildiv(H, SBN2), SPLITK), block_dim=SK_THREADS)
+    ctx.enqueue_function[r_add](Ph2_32, Xm, Int32(1), Int32(H), grid_dim=ceildiv(H, 256), block_dim=256)
+
+    # shared_head_norm (blk.32's own) then trunk's LM head (blk.32 has no
+    # shared_head_head tensor of its own — absent from GGUF).
+    var SharedHeadNorm = tens_f32(ctx, wbuf, off[e + 14], H, h_layout)
+    ctx.enqueue_function[rmsc_k](Xm, SharedHeadNorm, CurBm, Int32(H), Float32(1e-6), grid_dim=1, block_dim=256)
+    var WheadTrunk = tens_bf16(ctx, wbuf, off[e - 1], H * VOCAB, w_h_v)
+    ctx.enqueue_function[g_head_1](CurBm, WheadTrunk, Pv, Int32(1), Int32(VOCAB), Int32(H), grid_dim=(ceildiv(VOCAB, SBN2), SPLITK), block_dim=SK_THREADS)
+    ctx.enqueue_function[r_head](Pv, Logitsm, Int32(1), Int32(VOCAB), grid_dim=ceildiv(VOCAB, 256), block_dim=256)
+    ctx.enqueue_function[argmax_d](Logitsm, Dtok, Int32(VOCAB), Int32(0), grid_dim=1, block_dim=256)
+
+    ctx.synchronize()
+    var draft_logits_h = ctx.enqueue_create_host_buffer[f32](VOCAB)
+    ctx.enqueue_copy(
+        dst_buf=draft_logits_h,
+        src_buf=DeviceBuffer[f32](ctx, logits_d.unsafe_ptr(), VOCAB, owning=False),
+    )
+    var dtok_h = ctx.enqueue_create_host_buffer[DType.int32](1)
+    ctx.enqueue_copy(
+        dst_buf=dtok_h,
+        src_buf=DeviceBuffer[DType.int32](ctx, dtok_d.unsafe_ptr(), 1, owning=False),
+    )
+    ctx.synchronize()
+
+    with open(".work/draft-logits.bin", "w") as df:
+        var dp = draft_logits_h.unsafe_ptr().unsafe_bitcast[UInt8]()
+        var dspan = Span[UInt8](unsafe_ptr=dp, length=VOCAB * 4)
+        df.write_bytes(dspan)
+
+    print("DRAFT: from_token", last_tok, "draft_argmax", Int(dtok_h[0]))
