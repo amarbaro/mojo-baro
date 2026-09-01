@@ -239,7 +239,7 @@ def embed_lookup_pos[
     var idx = global_idx.x
     if idx >= Int(n):
         return
-    var token = Int(rebind[Scalar[DType.int32]](Toks[Int(pos)]))
+    var token = Int(rebind[Scalar[DType.int32]](Toks[Int(pos) + Int(block_idx.y)]))
     O[block_idx.y, idx] = rebind[O.ElementType](
         rebind[Scalar[DType.bfloat16]](Table[token, idx]).cast[f32]()
     )
@@ -288,7 +288,7 @@ def argmax_pos[
             if v > bv or (v == bv and ix < bi):
                 bv = v
                 bi = ix
-        Out[Int(wpos)] = rebind[Out.ElementType](bi)
+        Out[Int(wpos) + Int(row)] = rebind[Out.ElementType](bi)
 
 
 def argmax_row[

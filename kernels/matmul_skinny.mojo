@@ -337,7 +337,7 @@ def skinny_reduce_add[
     m: Int32,
     n: Int32,
 ):
-    comptime assert Cp.flat_rank == 3 and Y.flat_rank == 1
+    comptime assert Cp.flat_rank == 3 and Y.flat_rank == 2
 
     var M = Int(m)
     var N = Int(n)
@@ -350,7 +350,7 @@ def skinny_reduce_add[
     var acc: Scalar[dtype] = 0
     comptime for s in range(SPLITK):
         acc += rebind[Scalar[dtype]](Cp[s, r, c])
-    Y[c] = rebind[Y.ElementType](rebind[Scalar[dtype]](Y[c]) + acc)
+    Y[r, c] = rebind[Y.ElementType](rebind[Scalar[dtype]](Y[r, c]) + acc)
 
 
 def skinny_reduce[

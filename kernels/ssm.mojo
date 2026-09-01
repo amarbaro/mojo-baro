@@ -79,6 +79,7 @@ def ssm_reduce_gates[
     BetaOut: TileTensor[f32, GLayout, MutAnyOrigin],
     SsmA: TileTensor[f32, DLayout, MutAnyOrigin],
     DtBias: TileTensor[f32, DLayout, MutAnyOrigin],
+    row: Int32,
 ):
     comptime assert Ap.flat_rank == 3 and Bp.flat_rank == 3
     comptime assert EgOut.flat_rank == 1 and BetaOut.flat_rank == 1
@@ -86,11 +87,12 @@ def ssm_reduce_gates[
     var h = global_idx.x
     if h >= NH_V:
         return
+    var r = Int(row)
     var araw: Scalar[f32] = 0
     var braw: Scalar[f32] = 0
     comptime for s in range(SPLITK):
-        araw += rebind[Scalar[f32]](Ap[s, 0, h])
-        braw += rebind[Scalar[f32]](Bp[s, 0, h])
+        araw += rebind[Scalar[f32]](Ap[s, r, h])
+        braw += rebind[Scalar[f32]](Bp[s, r, h])
     BetaOut[h] = rebind[BetaOut.ElementType](1 / (1 + exp(-braw)))
     var asum = araw + rebind[Scalar[f32]](DtBias[h])
     var sp = log1p(exp(asum))

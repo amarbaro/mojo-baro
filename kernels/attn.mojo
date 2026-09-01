@@ -50,9 +50,11 @@ def attn_decode[
 ):
     comptime assert Q.flat_rank == 2 and Kc.flat_rank == 3 and O.flat_rank == 2
     var h = block_idx.x
+    var r = Int(block_idx.y)
     var tid = thread_idx.x
     var kvh = h // (NQH // NKVH)
-    var T = Int(t_len)
+    var T = Int(t_len) + r
+    var qrow = r * NQH + h
 
     var qs = stack_allocation[f32, address_space = AddressSpace.SHARED](
         row_major[HD]()
@@ -60,7 +62,7 @@ def attn_decode[
     var scores = stack_allocation[f32, address_space = AddressSpace.SHARED](
         row_major[MAX_T]()
     )
-    qs[tid] = rebind[qs.ElementType](Q[h, tid])
+    qs[tid] = rebind[qs.ElementType](Q[qrow, tid])
     barrier()
 
     var t = tid
@@ -117,7 +119,7 @@ def attn_decode[
         o += rebind[Scalar[f32]](scores[tt]) * rebind[Scalar[f32]](
             Vc[kvh, tt, tid]
         )
-    O[h, tid] = rebind[O.ElementType](o * inv)
+    O[qrow, tid] = rebind[O.ElementType](o * inv)
 
 
 def gate_mul[
@@ -172,11 +174,14 @@ def qgate_split[
     Q: TileTensor[f32, QLayout, MutAnyOrigin],
     Gate: TileTensor[f32, GLayout, MutAnyOrigin],
 ):
-    comptime assert Qfull.flat_rank == 1 and Q.flat_rank == 2 and Gate.flat_rank == 1
+    comptime assert Qfull.flat_rank == 2 and Q.flat_rank == 2 and Gate.flat_rank == 1
     var h = block_idx.x
+    var r = Int(block_idx.y)
     var d = thread_idx.x
-    Q[h, d] = rebind[Q.ElementType](Qfull[h * 2 * HD + d])
-    Gate[h * HD + d] = rebind[Gate.ElementType](Qfull[h * 2 * HD + HD + d])
+    Q[r * NQH + h, d] = rebind[Q.ElementType](Qfull[r, h * 2 * HD + d])
+    Gate[r * NQH * HD + h * HD + d] = rebind[Gate.ElementType](
+        Qfull[r, h * 2 * HD + HD + d]
+    )
 
 
 def rope_yarn[
@@ -184,11 +189,13 @@ def rope_yarn[
 ](
     X: TileTensor[f32, XLayout, MutAnyOrigin],
     pos: Int32,
+    nh: Int32,
 ):
     comptime assert X.flat_rank == 2
     var h = block_idx.x
+    var r = Int(block_idx.y)
     var j = thread_idx.x
-    var theta_ex = Float32(Int(pos)) * exp(
+    var theta_ex = Float32(Int(pos) + r) * exp(
         Float32(-2 * j) / Float32(NROT) * log(FREQ_BASE)
     )
     var theta_in = FREQ_SCALE * theta_ex
@@ -197,10 +204,11 @@ def rope_yarn[
     var theta = theta_in * (1 - ramp) + theta_ex * ramp
     var c = cos(theta) * MSCALE
     var s = sin(theta) * MSCALE
-    var x0 = rebind[Scalar[f32]](X[h, j])
-    var x1 = rebind[Scalar[f32]](X[h, j + NROT // 2])
-    X[h, j] = rebind[X.ElementType](x0 * c - x1 * s)
-    X[h, j + NROT // 2] = rebind[X.ElementType](x0 * s + x1 * c)
+    var row = r * Int(nh) + h
+    var x0 = rebind[Scalar[f32]](X[row, j])
+    var x1 = rebind[Scalar[f32]](X[row, j + NROT // 2])
+    X[row, j] = rebind[X.ElementType](x0 * c - x1 * s)
+    X[row, j + NROT // 2] = rebind[X.ElementType](x0 * s + x1 * c)
 
 
 def kv_append[
@@ -212,5 +220,6 @@ def kv_append[
 ):
     comptime assert Cache.flat_rank == 3 and New.flat_rank == 2
     var h = block_idx.x
+    var r = Int(block_idx.y)
     var d = thread_idx.x
-    Cache[h, Int(t_idx), d] = rebind[Cache.ElementType](New[h, d])
+    Cache[h, Int(t_idx) + r, d] = rebind[Cache.ElementType](New[r * NKVH + h, d])

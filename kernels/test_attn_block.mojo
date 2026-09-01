@@ -190,7 +190,7 @@ def main() raises:
     comptime r_qf = skinny_reduce[type_of(p_qf), type_of(c_qf)]
     comptime r_kv = skinny_reduce[type_of(p_kv), type_of(c_kv)]
     comptime r_h = skinny_reduce[type_of(p_h), type_of(c_h)]
-    comptime split_k = qgate_split[type_of(qf_layout), type_of(q_layout), type_of(h_layout)]
+    comptime split_k = qgate_split[type_of(c_qf), type_of(q_layout), type_of(h_layout)]
     comptime hrms_q = head_rmsnorm[type_of(q_layout), type_of(hd_layout)]
     comptime hrms_kv = head_rmsnorm[type_of(kv_layout), type_of(hd_layout)]
     comptime rope_q = rope_yarn[type_of(q_layout)]
@@ -208,11 +208,11 @@ def main() raises:
     ctx.enqueue_function[r_kv](Pkv, K2c, Int32(1), Int32(KV), grid_dim=ceildiv(KV, 256), block_dim=256)
     ctx.enqueue_function[g_kv](CurB2, Wv, Pkv, Int32(1), Int32(KV), Int32(H), grid_dim=(ceildiv(KV, SBN), SPLITK), block_dim=SK_THREADS)
     ctx.enqueue_function[r_kv](Pkv, V2c, Int32(1), Int32(KV), grid_dim=ceildiv(KV, 256), block_dim=256)
-    ctx.enqueue_function[split_k](Qf1, Q, Gate1, grid_dim=NQH, block_dim=HD)
+    ctx.enqueue_function[split_k](Qf2, Q, Gate1, grid_dim=NQH, block_dim=HD)
     ctx.enqueue_function[hrms_q](Q, Qn, Float32(1e-6), grid_dim=NQH, block_dim=HD)
     ctx.enqueue_function[hrms_kv](Khd, Kn, Float32(1e-6), grid_dim=NKVH, block_dim=HD)
-    ctx.enqueue_function[rope_q](Q, Int32(POS), grid_dim=NQH, block_dim=32)
-    ctx.enqueue_function[rope_k](Khd, Int32(POS), grid_dim=NKVH, block_dim=32)
+    ctx.enqueue_function[rope_q](Q, Int32(POS), Int32(NQH), grid_dim=NQH, block_dim=32)
+    ctx.enqueue_function[rope_k](Khd, Int32(POS), Int32(NKVH), grid_dim=NKVH, block_dim=32)
     ctx.enqueue_function[append_k](Kc, Khd, Int32(T_PRE), grid_dim=NKVH, block_dim=HD)
     ctx.enqueue_function[append_k](Vc, Vhd, Int32(T_PRE), grid_dim=NKVH, block_dim=HD)
     ctx.enqueue_function[att_k](Q, Kc, Vc, O, Int32(T), Float32(0.0625), grid_dim=NQH, block_dim=HD)
