@@ -15,7 +15,7 @@ from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, row_major
 
-from baro import Baro
+from amarbaro import AmarBaro
 from matmul_skinny import (
     matmul_skinny, matmul_skinny_q8b, matmul_skinny_v2,
     SM, SBN, SPLITK, SK_THREADS, Q8_BLOCK,
@@ -207,7 +207,7 @@ def main() raises:
         ctx.synchronize()
         var v2c8_us = Float64(perf_counter_ns() - t0) / 1.0e3 / Float64(ITERS)
 
-        var baro = Baro()
+        var baro = AmarBaro()
         var pa = Int(a16_dev.unsafe_ptr())
         var pc = Int(c16_dev.unsafe_ptr())
         w0 = perf_counter_ns()

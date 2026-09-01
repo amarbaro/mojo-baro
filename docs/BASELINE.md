@@ -37,7 +37,7 @@ directly: two independent owners of one hipBLASLt context is a lifetime bug.
 | Component | Path | Verify with |
 |---|---|---|
 | C++ hipBLASLt shim | `shim/` | `./run-tests.sh` |
-| Mojo FFI binding | `kernels/baro.mojo` | `./run-tests.sh` |
+| Mojo FFI binding | `kernels/amarbaro.mojo` | `./run-tests.sh` |
 | GEMM kernels | `kernels/matmul.mojo` | `./bench/run.py` |
 | Bench + correctness engine | `bench/run.py` | `./bench/run.py` |
 | Parameter sweep | `bench/sweep.py` | `./bench/sweep.py` |
@@ -98,7 +98,7 @@ proven otherwise.
 
 **`DLHandle` no longer exists.** FFI goes through `external_call`, and the binary
 must be linked against the shared library at build time:
-`-Xlinker -L<dir> -Xlinker -lbaro_shim -Xlinker -rpath -Xlinker <dir>`.
+`-Xlinker -L<dir> -Xlinker -lamarbaro_shim -Xlinker -rpath -Xlinker <dir>`.
 `mojo run`'s JIT will **not** resolve external symbols and `LD_PRELOAD` does not
 reach it — build AOT.
 

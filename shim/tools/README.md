@@ -7,7 +7,7 @@ actually needs.
 
 It is what established that hipBLASLt's defaults leave ~2x on the table on
 gfx1100 (2497 -> 5201 GFLOP/s at 512^3 fp32) and that splitK is the workspace
-consumer, which is why `baro_ctx` right-sizes rather than reserving a fixed
+consumer, which is why `amarbaro_ctx` right-sizes rather than reserving a fixed
 budget.
 
 ```bash

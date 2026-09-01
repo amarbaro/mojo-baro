@@ -75,7 +75,7 @@ def measure(T):
     b = subprocess.run(
         [str(ROOT / ".venv/bin/mojo"), "build",
          T["bench"], "-o", str(ROOT / ".work/sweep_bin"), "-I", "kernels",
-         "-Xlinker", f"-L{ROOT / '.work/shim-build'}", "-Xlinker", "-lbaro_shim",
+         "-Xlinker", f"-L{ROOT / '.work/shim-build'}", "-Xlinker", "-lamarbaro_shim",
          "-Xlinker", "-rpath", "-Xlinker", str(ROOT / ".work/shim-build")],
         cwd=ROOT, text=True, capture_output=True)
     if b.returncode:

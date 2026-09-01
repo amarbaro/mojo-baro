@@ -1,7 +1,7 @@
 """Numeric check: shim GEMM on gfx1100 vs a host reference."""
 from std.memory import alloc
 
-from baro import Baro
+from amarbaro import AmarBaro
 
 
 def main() raises:
@@ -20,7 +20,7 @@ def main() raises:
         for j in range(N):
             b_host[unsafe_offset=i * N + j] = Float16(i - j)
 
-    var baro = Baro()
+    var baro = AmarBaro()
     var a_dev = baro.device_alloc(M * K * 2)
     var b_dev = baro.device_alloc(K * N * 2)
     var c_dev = baro.device_alloc(M * N * 2)

@@ -78,7 +78,7 @@ def main():
     build = sh(
         str(ROOT / ".venv/bin/mojo"), "build", src,
         "-o", str(BIN), "-I", "kernels",
-        "-Xlinker", f"-L{SHIM}", "-Xlinker", "-lbaro_shim",
+        "-Xlinker", f"-L{SHIM}", "-Xlinker", "-lamarbaro_shim",
         "-Xlinker", "-rpath", "-Xlinker", str(SHIM),
     )
     if build.returncode:

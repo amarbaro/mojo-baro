@@ -1,4 +1,4 @@
-#include "baro_shim.h"
+#include "amarbaro_shim.h"
 
 #include <hip/hip_runtime.h>
 #include <hipblaslt/hipblaslt.h>
@@ -19,17 +19,17 @@ thread_local std::string g_last_error;
 void set_error(const char *what) { g_last_error = what; }
 } // namespace
 
-extern "C" int baro_sync(baro_ctx *ctx);
+extern "C" int amarbaro_sync(amarbaro_ctx *ctx);
 
 namespace {
 /* Grow-only during search, then shrunk once to the winner's requirement. */
-bool ensure_workspace(baro_ctx *ctx, size_t bytes);
+bool ensure_workspace(amarbaro_ctx *ctx, size_t bytes);
 }
 
 namespace {
 } // namespace
 
-struct baro_ctx {
+struct amarbaro_ctx {
   hipStream_t stream;
   hipblasLtHandle_t lt;
   int device_id;
@@ -51,12 +51,12 @@ struct baro_ctx {
   hipDataType cached_dt;
 };
 
-extern "C" baro_ctx *baro_init(int device_id) {
+extern "C" amarbaro_ctx *amarbaro_init(int device_id) {
   if (hipSetDevice(device_id) != hipSuccess) {
     set_error("hipSetDevice failed");
     return nullptr;
   }
-  auto *ctx = new baro_ctx{};
+  auto *ctx = new amarbaro_ctx{};
   ctx->device_id = device_id;
   if (hipStreamCreate(&ctx->stream) != hipSuccess) {
     set_error("hipStreamCreate failed");
@@ -77,7 +77,7 @@ extern "C" baro_ctx *baro_init(int device_id) {
   return ctx;
 }
 
-extern "C" void baro_destroy(baro_ctx *ctx) {
+extern "C" void amarbaro_destroy(amarbaro_ctx *ctx) {
   if (!ctx)
     return;
   if (ctx->workspace)
@@ -89,7 +89,7 @@ extern "C" void baro_destroy(baro_ctx *ctx) {
 
 namespace {
 
-bool ensure_workspace(baro_ctx *ctx, size_t bytes) {
+bool ensure_workspace(amarbaro_ctx *ctx, size_t bytes) {
   if (bytes == ctx->workspace_size)
     return true;
   if (ctx->workspace) {
@@ -109,7 +109,7 @@ bool ensure_workspace(baro_ctx *ctx, size_t bytes) {
 
 /* Row-major A(m,k)*B(k,n) is issued as the column-major product B'(n,k)*A'(k,m),
    so hipBLASLt sees a plain NN GEMM with the operands swapped. */
-int gemm_impl(baro_ctx *ctx, int m, int n, int k, const void *a, const void *b,
+int gemm_impl(amarbaro_ctx *ctx, int m, int n, int k, const void *a, const void *b,
               void *c, float alpha, float beta, hipDataType dt) {
   if (!ctx || !a || !b || !c) {
     set_error("null argument");
@@ -246,17 +246,17 @@ int gemm_impl(baro_ctx *ctx, int m, int n, int k, const void *a, const void *b,
 
 } // namespace
 
-extern "C" int baro_gemm_f16(baro_ctx *ctx, int m, int n, int k, const void *a,
+extern "C" int amarbaro_gemm_f16(amarbaro_ctx *ctx, int m, int n, int k, const void *a,
                              const void *b, void *c, float alpha, float beta) {
   return gemm_impl(ctx, m, n, k, a, b, c, alpha, beta, HIP_R_16F);
 }
 
-extern "C" int baro_gemm_f32(baro_ctx *ctx, int m, int n, int k, const void *a,
+extern "C" int amarbaro_gemm_f32(amarbaro_ctx *ctx, int m, int n, int k, const void *a,
                              const void *b, void *c, float alpha, float beta) {
   return gemm_impl(ctx, m, n, k, a, b, c, alpha, beta, HIP_R_32F);
 }
 
-extern "C" void *baro_device_alloc(size_t bytes) {
+extern "C" void *amarbaro_device_alloc(size_t bytes) {
   void *ptr = nullptr;
   if (hipMalloc(&ptr, bytes) != hipSuccess) {
     set_error("hipMalloc failed");
@@ -265,12 +265,12 @@ extern "C" void *baro_device_alloc(size_t bytes) {
   return ptr;
 }
 
-extern "C" void baro_device_free(void *ptr) {
+extern "C" void amarbaro_device_free(void *ptr) {
   if (ptr)
     (void)hipFree(ptr);
 }
 
-extern "C" int baro_upload(baro_ctx *ctx, void *dst, const void *src,
+extern "C" int amarbaro_upload(amarbaro_ctx *ctx, void *dst, const void *src,
                            size_t bytes) {
   if (!ctx) {
     set_error("null context");
@@ -282,10 +282,10 @@ extern "C" int baro_upload(baro_ctx *ctx, void *dst, const void *src,
     set_error("hipMemcpyHtoDAsync failed");
     return -1;
   }
-  return baro_sync(ctx);
+  return amarbaro_sync(ctx);
 }
 
-extern "C" int baro_download(baro_ctx *ctx, void *dst, const void *src,
+extern "C" int amarbaro_download(amarbaro_ctx *ctx, void *dst, const void *src,
                              size_t bytes) {
   if (!ctx) {
     set_error("null context");
@@ -297,10 +297,10 @@ extern "C" int baro_download(baro_ctx *ctx, void *dst, const void *src,
     set_error("hipMemcpyDtoHAsync failed");
     return -1;
   }
-  return baro_sync(ctx);
+  return amarbaro_sync(ctx);
 }
 
-extern "C" int baro_sync(baro_ctx *ctx) {
+extern "C" int amarbaro_sync(amarbaro_ctx *ctx) {
   if (!ctx) {
     set_error("null context");
     return -1;
@@ -312,20 +312,20 @@ extern "C" int baro_sync(baro_ctx *ctx) {
   return 0;
 }
 
-extern "C" int baro_algo_count(baro_ctx *ctx) {
+extern "C" int amarbaro_algo_count(amarbaro_ctx *ctx) {
   return ctx ? ctx->n_algos : 0;
 }
 
-extern "C" int baro_splitk(baro_ctx *ctx) { return ctx ? ctx->best_splitk : -1; }
+extern "C" int amarbaro_splitk(amarbaro_ctx *ctx) { return ctx ? ctx->best_splitk : -1; }
 
-extern "C" size_t baro_workspace_bytes(baro_ctx *ctx) {
+extern "C" size_t amarbaro_workspace_bytes(amarbaro_ctx *ctx) {
   return ctx ? ctx->workspace_size : 0;
 }
 
-extern "C" int baro_wgm(baro_ctx *ctx) { return ctx ? ctx->best_wgm : -1; }
+extern "C" int amarbaro_wgm(amarbaro_ctx *ctx) { return ctx ? ctx->best_wgm : -1; }
 
-extern "C" int baro_algo_chosen(baro_ctx *ctx) {
+extern "C" int amarbaro_algo_chosen(amarbaro_ctx *ctx) {
   return ctx ? ctx->chosen_algo : -1;
 }
 
-extern "C" const char *baro_last_error(void) { return g_last_error.c_str(); }
+extern "C" const char *amarbaro_last_error(void) { return g_last_error.c_str(); }

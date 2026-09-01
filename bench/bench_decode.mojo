@@ -15,7 +15,7 @@ comptime WARMUP_SECONDS = 1.0
 from max.gpu.host import DeviceContext, HostBuffer
 from layout import TileTensor, row_major
 
-from baro import Baro
+from amarbaro import AmarBaro
 from matmul import dtype, BM, BN, TM, TN
 from matmul_dbuf import matmul_dbuf
 from matmul_pipe import matmul_pipe
@@ -206,7 +206,7 @@ def main() raises:
     var sk16_err = check(a_host, b_host, c_host)
 
     # --- hipBLASLt vendor baseline ---
-    var baro = Baro()
+    var baro = AmarBaro()
     var pa = Int(a_dev.unsafe_ptr())
     var pb = Int(b_dev.unsafe_ptr())
     var pc = Int(c_dev.unsafe_ptr())
