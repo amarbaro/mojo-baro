@@ -445,7 +445,10 @@ def main() raises:
     # BARO_PROFILE=1: synchronize at sub-block boundaries and attribute GPU
     # time to attn / ssm / ffn / head. Off by default; the timed path is
     # untouched.
-    var prof = getenv("BARO_PROFILE", "0") == "1"
+    var prof = getenv("BARO_PROFILE", "0") != "0"
+    var pf2 = getenv("BARO_PROFILE", "0") == "2"
+    var pc = [0, 0, 0, 0, 0, 0, 0, 0]
+    var tq = t0
     var pf_att = 0
     var pf_ssm = 0
     var pf_ffn = 0
@@ -469,6 +472,7 @@ def main() raises:
             if prof:
                 ctx.synchronize()
                 tp = perf_counter_ns()
+                tq = tp
             # -- attention / ssm sub-block --
             ctx.enqueue_function[rmsc_k](
                 Xm, tens_f32(ctx, wbuf, off[w], H, h_layout), CurBm,
@@ -605,12 +609,42 @@ def main() raises:
                     var Qkv1 = row_f32(ctx, qkv_d, r * CONV, CONV, conv_layout)
                     var Z1 = row_f32(ctx, z_d, r * H, H, h_layout)
                     var ResB1 = row_bf16(ctx, resb_d, r * H, H, h_layout)
+                    if pf2:
+                        ctx.synchronize()
+                        var nw = perf_counter_ns()
+                        pc[0] += Int(nw - tq)
+                        tq = nw
                     ctx.enqueue_function[rgates_k](Pab, Pab2, Eg, Beta, SsmA, DtB, Int32(r), grid_dim=1, block_dim=NH_V)
+                    if pf2:
+                        ctx.synchronize()
+                        var nw = perf_counter_ns()
+                        pc[1] += Int(nw - tq)
+                        tq = nw
                     ctx.enqueue_function[conv_k](Qkv1, Cs, Cw, Conv, Cs_w, grid_dim=ceildiv(CONV, 256), block_dim=256)
+                    if pf2:
+                        ctx.synchronize()
+                        var nw = perf_counter_ns()
+                        pc[2] += Int(nw - tq)
+                        tq = nw
                     ctx.enqueue_function[l2_k](Conv, grid_dim=NH_V, block_dim=SSTATE)
+                    if pf2:
+                        ctx.synchronize()
+                        var nw = perf_counter_ns()
+                        pc[3] += Int(nw - tq)
+                        tq = nw
                     ctx.enqueue_function[delta_k](S0, S0_w, Conv, Eg, Beta, So, grid_dim=NH_V, block_dim=SSTATE)
+                    if pf2:
+                        ctx.synchronize()
+                        var nw = perf_counter_ns()
+                        pc[4] += Int(nw - tq)
+                        tq = nw
                     ctx.enqueue_function[gated_k](So, Z1, Nw, ResB1, grid_dim=NH_V, block_dim=SSTATE)
 
+                if pf2:
+                    ctx.synchronize()
+                    var nw = perf_counter_ns()
+                    pc[5] += Int(nw - tq)
+                    tq = nw
                 if m == 1:
                     ctx.enqueue_function[g_h_1](ResBm, Wsout, Ph, Int32(m), Int32(H), Int32(H), grid_dim=(ceildiv(H, SBN2), SPLITK), block_dim=SK_THREADS)
                 else:
@@ -626,7 +660,10 @@ def main() raises:
                     pf_att += Int(now - tp)
                 else:
                     pf_ssm += Int(now - tp)
+                    if pf2:
+                        pc[6] += Int(now - tq)
                 tp = now
+                tq = now
             # -- ffn sub-block --
             ctx.enqueue_function[rmsc_k](
                 Xm, tens_f32(ctx, wbuf, off[w], H, h_layout), CurBm,
@@ -704,6 +741,11 @@ def main() raises:
         print("profile: ssm", Float64(pf_ssm) / 1e9, Float64(pf_ssm) / tot)
         print("profile: ffn", Float64(pf_ffn) / 1e9, Float64(pf_ffn) / tot)
         print("profile: head", Float64(pf_head) / 1e9, Float64(pf_head) / tot)
+    if pf2:
+        var names = ["gemm4+reduce2", "rgates", "conv", "l2", "delta", "gated", "out_gemm+add", "-"]
+        var st = Float64(pc[0] + pc[1] + pc[2] + pc[3] + pc[4] + pc[5] + pc[6])
+        for i in range(7):
+            print("ssm-kernel:", names[i], Float64(pc[i]) / 1e9, Float64(pc[i]) / st)
     ctx.enqueue_copy(dst_buf=toks_h, src_buf=toks_d)
     ctx.synchronize()
     var generated = List[Int]()
