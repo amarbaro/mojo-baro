@@ -11,7 +11,7 @@ from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext, HostBuffer
 from layout import TileTensor, row_major
 
-from matmul_wmma_lds import amar_matmul_wmma_lds, BLK_M, BLK_N, NTHREADS
+from matmul_wmma_lds import amar_matmul_wmma_lds, BLK_M, BLK_N, BLK_K, NTHREADS, WARPS_M, WARPS_N, WTILE_M, WTILE_N
 
 comptime M = 512
 comptime N = 512
@@ -104,5 +104,9 @@ def main() raises:
     out += '"gflops": ' + String(FLOPS / (ms * 1.0e6)) + ", "
     out += '"correct": ' + ("true" if err < 0.01 else "false") + ", "
     out += '"max_err": ' + String(err) + ", "
-    out += '"iters": ' + String(ITERS) + ', "tile": 16, "dtype": "float16"}'
+    out += '"iters": ' + String(ITERS) + ', "tile": 16, "dtype": "float16", '
+    out += '"blk": [' + String(BLK_M) + ", " + String(BLK_N) + ", " + String(BLK_K) + "], "
+    out += '"warps": [' + String(WARPS_M) + ", " + String(WARPS_N) + "], "
+    out += '"wtile": [' + String(WTILE_M) + ", " + String(WTILE_N) + "], "
+    out += '"grid": [' + String(GRID[0]) + ", " + String(GRID[1]) + '], "block": ' + String(NTHREADS) + "}"
     print(out)

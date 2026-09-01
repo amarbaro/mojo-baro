@@ -37,14 +37,17 @@ comptime WARPS_N = 4
 comptime WTILE_M = 2  # 16x16 tiles per warp, M direction
 comptime WTILE_N = 1
 
-comptime BLK_M = WARPS_M * WTILE_M * WMMA_M  # 64
-comptime BLK_N = WARPS_N * WTILE_N * WMMA_N  # 64
+comptime BLK_M = WARPS_M * WTILE_M * WMMA_M
+comptime BLK_N = WARPS_N * WTILE_N * WMMA_N
 # BLK_K=64 was tried and is worse everywhere (2048^3: 21901 -> 8602). It puts
 # 16 KB of LDS in a block and craters occupancy; at 16 the footprint is 4 KB.
 # Occupancy beats reuse on this card -- the same result the fp32 sweep and the
 # aiter tuning both produced.
 comptime BLK_K = WMMA_K
-comptime NTHREADS = WARPS_M * WARPS_N * 32   # 128
+comptime NTHREADS = WARPS_M * WARPS_N * 32
+comptime VEC = 8
+comptime A_LOADERS = BLK_M * BLK_K // VEC
+comptime B_LOADERS = BLK_K * BLK_N // VEC
 
 
 def amar_matmul_wmma_lds[
@@ -58,6 +61,7 @@ def amar_matmul_wmma_lds[
     k_dim: Int32,
 ):
     comptime assert A.flat_rank == 2 and B.flat_rank == 2 and C.flat_rank == 2
+    comptime assert A_LOADERS + B_LOADERS <= NTHREADS
 
     var M = Int(m)
     var N = Int(n)
@@ -83,28 +87,42 @@ def amar_matmul_wmma_lds[
 
     var acc = SIMD[DType.float32, WTILE_M * WTILE_N * 8](0)
 
+    var sav = sa.vectorize[1, VEC]()
+    var sbv = sb.vectorize[1, VEC]()
+    var Av = A.vectorize[1, VEC]()
+    var Bv = B.vectorize[1, VEC]()
+    comptime assert sav.flat_rank == 2 and sbv.flat_rank == 2
+    comptime assert Av.flat_rank == 2 and Bv.flat_rank == 2
+
     var kt = 0
     while kt < K:
-        # 128 threads stage 64x16 and 16x64 elements: 8 each, contiguous in the
-        # fast axis so the global reads coalesce.
-        comptime for s in range(BLK_M * BLK_K // NTHREADS):
-            var e = tid + s * NTHREADS
-            var r = e // BLK_K
-            var c = e % BLK_K
+        if tid < A_LOADERS:
+            var r = tid // (BLK_K // VEC)
+            var c = (tid % (BLK_K // VEC)) * VEC
             var gr = block_row + r
             var gc = kt + c
-            sa[r, c] = rebind[sa.ElementType](
-                A[gr, gc] if gr < M and gc < K else Scalar[DType.float16](0)
-            )
-        comptime for s in range(BLK_K * BLK_N // NTHREADS):
-            var e = tid + s * NTHREADS
-            var r = e // BLK_N
-            var c = e % BLK_N
+            if gr < M and gc + VEC <= K:
+                sav[r, c // VEC] = rebind[sav.ElementType](Av[gr, gc // VEC])
+            else:
+                comptime for i in range(VEC):
+                    sa[r, c + i] = rebind[sa.ElementType](
+                        A[gr, gc + i] if gr < M and gc + i < K
+                        else Scalar[DType.float16](0)
+                    )
+        elif tid < A_LOADERS + B_LOADERS:
+            var e = tid - A_LOADERS
+            var r = e // (BLK_N // VEC)
+            var c = (e % (BLK_N // VEC)) * VEC
             var gr = kt + r
             var gc = block_col + c
-            sb[r, c] = rebind[sb.ElementType](
-                B[gr, gc] if gr < K and gc < N else Scalar[DType.float16](0)
-            )
+            if gr < K and gc + VEC <= N:
+                sbv[r, c // VEC] = rebind[sbv.ElementType](Bv[gr, gc // VEC])
+            else:
+                comptime for i in range(VEC):
+                    sb[r, c + i] = rebind[sb.ElementType](
+                        B[gr, gc + i] if gr < K and gc + i < N
+                        else Scalar[DType.float16](0)
+                    )
         barrier()
 
         # One LDS stage now feeds BLK_K/WMMA_K matrix-core steps, so the two
