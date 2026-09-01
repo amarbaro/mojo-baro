@@ -68,3 +68,40 @@ Only medians produced by this exact procedure may be recorded as
 "the bar". Any deviation (different prompt, n_predict, server flags)
 requires a new preregistration. Per-arm spread > 10% of median voids
 the arm.
+
+## v5 preregistration (2026-09-01) — denominator change, no new "Ours" number yet
+
+**Question**: does `Ours` tok/s become directly comparable to
+llama.cpp's `timings.predicted_per_second` once both sides use the
+same denominator convention?
+
+**Why re-register**: `timings.predicted_per_second` is
+`n_gen_steps() / t_gen_ms()` (verified
+`/home/mario/llama.cpp/tools/server/server-common.h:404-427`):
+`n_gen_steps() = n_gen - 1` (first token free, logits already came
+from the last prompt batch) and `t_gen_ms()` excludes prompt eval
+(`t_gen_last - t_prompt_last`). Our engine's clock (`serve/engine.mojo`)
+previously started before the prefill loop and divided by the full
+`GEN_N`, so the old "Ours 25.5 / 39.4" numbers in this file are not
+on the same footing as the llama.cpp bar. This is a claim-rule
+trigger per the section above: different instrument, new
+preregistration required before any "Ours" figure is cited against
+the 44.1 / 109.8 bars.
+
+**Instrument**: `serve/engine.mojo` now prints `prefill_s`,
+`decode_s`, `tok/s_total` (old metric, unchanged, own tracking
+number — full-run clock / GEN_N), and `tok/s_gen = (GEN_N - 1) /
+decode_s`, where `decode_s` excludes the prefill window (first
+head-block emission, i.e. `pos + m >= len(prompt)`). `tok/s_gen` is
+the llama.cpp-comparable field; `tok/s_total` is not and must not be
+quoted against the bar.
+
+**llama.cpp side**: the 44.1 tok/s (arm B, no MTP) and 109.8 tok/s
+(arm A, MTP) bars above are UNCHANGED and need no re-run — they were
+already `timings.predicted_per_second`, the same convention
+`tok/s_gen` now matches on our side.
+
+**Status**: instrument change only. No re-measurement was run under
+this preregistration. No new "Ours" tok/s number — from `tok/s_gen`
+or otherwise — may be cited as a claim until a fresh run is executed
+and recorded under this section per the claim rule above.
