@@ -137,6 +137,26 @@ def gate_mul[
     )
 
 
+def gate_mul_cast[
+    XLayout: TensorLayout, GLayout: TensorLayout, OLayout: TensorLayout
+](
+    X: TileTensor[f32, XLayout, MutAnyOrigin],
+    Gate: TileTensor[f32, GLayout, MutAnyOrigin],
+    O: TileTensor[DType.bfloat16, OLayout, MutAnyOrigin],
+    n: Int32,
+):
+    comptime assert X.flat_rank == 1 and Gate.flat_rank == 1 and O.flat_rank == 1
+    var i = global_idx.x
+    if i >= Int(n):
+        return
+    var g = rebind[Scalar[f32]](Gate[i])
+    O[i] = rebind[O.ElementType](
+        (rebind[Scalar[f32]](X[i]) * (1 / (1 + exp(-g)))).cast[
+            DType.bfloat16
+        ]()
+    )
+
+
 comptime NROT = 64
 comptime YARN_LOW = Float32(14.0)
 comptime YARN_HIGH = Float32(22.0)

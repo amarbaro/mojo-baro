@@ -54,6 +54,52 @@ def rmsnorm[
         i += EW_THREADS
 
 
+def rmsnorm_cast[
+    XLayout: TensorLayout, GLayout: TensorLayout, OLayout: TensorLayout
+](
+    X: TileTensor[f32, XLayout, MutAnyOrigin],
+    G: TileTensor[f32, GLayout, MutAnyOrigin],
+    O: TileTensor[DType.bfloat16, OLayout, MutAnyOrigin],
+    n: Int32,
+    eps: Float32,
+):
+    comptime assert X.flat_rank == 2 and G.flat_rank == 1 and O.flat_rank == 2
+
+    var N = Int(n)
+    var row = block_idx.x
+    var tid = thread_idx.x
+
+    var partial: Float32 = 0
+    var i = tid
+    while i < N:
+        var v = rebind[Scalar[f32]](X[row, i])
+        partial += v * v
+        i += EW_THREADS
+
+    var sums = stack_allocation[
+        f32, address_space = AddressSpace.SHARED
+    ](row_major[EW_THREADS // WARP_SIZE]())
+    var wsum = warp.sum(partial)
+    if lane_id() == 0:
+        sums[tid // WARP_SIZE] = rebind[sums.ElementType](wsum)
+    barrier()
+    var total: Float32 = 0
+    comptime for w in range(EW_THREADS // WARP_SIZE):
+        total += rebind[Scalar[f32]](sums[w])
+
+    var scale = rsqrt(total / Float32(N) + eps)
+    i = tid
+    while i < N:
+        O[row, i] = rebind[O.ElementType](
+            (
+                rebind[Scalar[f32]](X[row, i])
+                * scale
+                * rebind[Scalar[f32]](G[i])
+            ).cast[DType.bfloat16]()
+        )
+        i += EW_THREADS
+
+
 def swiglu[
     GLayout: TensorLayout, ULayout: TensorLayout, OLayout: TensorLayout
 ](
@@ -177,6 +223,72 @@ def embed_lookup[
     O[block_idx.y, idx] = rebind[O.ElementType](
         rebind[Scalar[DType.bfloat16]](Table[Int(token), idx]).cast[f32]()
     )
+
+
+def embed_lookup_pos[
+    TLayout: TensorLayout, OLayout: TensorLayout, KLayout: TensorLayout
+](
+    Table: TileTensor[DType.bfloat16, TLayout, MutAnyOrigin],
+    O: TileTensor[f32, OLayout, MutAnyOrigin],
+    Toks: TileTensor[DType.int32, KLayout, MutAnyOrigin],
+    pos: Int32,
+    n: Int32,
+):
+    comptime assert Table.flat_rank == 2 and O.flat_rank == 2 and Toks.flat_rank == 1
+
+    var idx = global_idx.x
+    if idx >= Int(n):
+        return
+    var token = Int(rebind[Scalar[DType.int32]](Toks[Int(pos)]))
+    O[block_idx.y, idx] = rebind[O.ElementType](
+        rebind[Scalar[DType.bfloat16]](Table[token, idx]).cast[f32]()
+    )
+
+
+def argmax_pos[
+    XLayout: TensorLayout, OLayout: TensorLayout
+](
+    X: TileTensor[f32, XLayout, MutAnyOrigin],
+    Out: TileTensor[DType.int32, OLayout, MutAnyOrigin],
+    n: Int32,
+    wpos: Int32,
+):
+    comptime assert X.flat_rank == 2 and Out.flat_rank == 1
+
+    var N = Int(n)
+    var row = block_idx.x
+    var tid = thread_idx.x
+
+    var best_v = Float32(-3.4e38)
+    var best_i: Int32 = 0
+    var i = tid
+    while i < N:
+        var v = rebind[Scalar[f32]](X[row, i])
+        if v > best_v:
+            best_v = v
+            best_i = Int32(i)
+        i += EW_THREADS
+
+    var vals = stack_allocation[
+        f32, address_space = AddressSpace.SHARED
+    ](row_major[EW_THREADS]())
+    var idxs = stack_allocation[
+        DType.int32, address_space = AddressSpace.SHARED
+    ](row_major[EW_THREADS]())
+    vals[tid] = rebind[vals.ElementType](best_v)
+    idxs[tid] = rebind[idxs.ElementType](best_i)
+    barrier()
+
+    if tid == 0:
+        var bv = Float32(-3.4e38)
+        var bi: Int32 = 0
+        comptime for t in range(EW_THREADS):
+            var v = rebind[Scalar[f32]](vals[t])
+            var ix = rebind[Scalar[DType.int32]](idxs[t])
+            if v > bv or (v == bv and ix < bi):
+                bv = v
+                bi = ix
+        Out[Int(wpos)] = rebind[Out.ElementType](bi)
 
 
 def argmax_row[

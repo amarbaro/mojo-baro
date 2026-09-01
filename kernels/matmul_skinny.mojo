@@ -176,6 +176,58 @@ def skinny_reduce_swiglu[
     C[r, c] = rebind[C.ElementType](silu * u)
 
 
+def skinny_reduce_swiglu_bf16[
+    PLayout: TensorLayout, CLayout: TensorLayout
+](
+    Gp: TileTensor[dtype, PLayout, MutAnyOrigin],
+    Up: TileTensor[dtype, PLayout, MutAnyOrigin],
+    C: TileTensor[DType.bfloat16, CLayout, MutAnyOrigin],
+    m: Int32,
+    n: Int32,
+):
+    comptime assert Gp.flat_rank == 3 and Up.flat_rank == 3 and C.flat_rank == 2
+
+    var M = Int(m)
+    var N = Int(n)
+    var gid = global_idx.x
+    if gid >= M * N:
+        return
+    var r = gid // N
+    var c = gid % N
+
+    var g: Scalar[dtype] = 0
+    var u: Scalar[dtype] = 0
+    comptime for s in range(SPLITK):
+        g += rebind[Scalar[dtype]](Gp[s, r, c])
+        u += rebind[Scalar[dtype]](Up[s, r, c])
+    var silu = g / (1 + exp(-g))
+    C[r, c] = rebind[C.ElementType]((silu * u).cast[DType.bfloat16]())
+
+
+def skinny_reduce_add[
+    PLayout: TensorLayout, YLayout: TensorLayout
+](
+    Cp: TileTensor[dtype, PLayout, MutAnyOrigin],
+    Y: TileTensor[dtype, YLayout, MutAnyOrigin],
+    m: Int32,
+    n: Int32,
+):
+    comptime assert Cp.flat_rank == 3 and Y.flat_rank == 1
+
+    var M = Int(m)
+    var N = Int(n)
+    var gid = global_idx.x
+    if gid >= M * N:
+        return
+    var r = gid // N
+    var c = gid % N
+
+    var acc: Scalar[dtype] = 0
+    comptime for s in range(SPLITK):
+        acc += rebind[Scalar[dtype]](Cp[s, r, c])
+    Y[c] = rebind[Y.ElementType](rebind[Scalar[dtype]](Y[c]) + acc)
+
+
 def skinny_reduce[
     PLayout: TensorLayout, CLayout: TensorLayout
 ](

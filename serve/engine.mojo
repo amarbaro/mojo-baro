@@ -14,17 +14,17 @@ from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, TensorLayout, row_major
 
-from elementwise import rmsnorm, embed_lookup, argmax_row
+from elementwise import rmsnorm_cast, embed_lookup_pos, argmax_pos
 from matmul_skinny import (
-    matmul_skinny, skinny_reduce, skinny_reduce_swiglu,
+    matmul_skinny, skinny_reduce, skinny_reduce_add, skinny_reduce_swiglu_bf16,
     SM, SBN, SPLITK, SK_THREADS,
 )
 from ssm import (
-    cast_bf16, residual_add, ssm_gates, ssm_conv, ssm_qk_l2norm,
-    ssm_delta_step, ssm_gated_out, CONV, NH_V, SSTATE,
+    ssm_reduce_gates, ssm_conv, ssm_qk_l2norm,
+    ssm_delta_step, ssm_gated_out_bf16, CONV, NH_V, SSTATE,
 )
 from attn import (
-    head_rmsnorm, attn_decode, gate_mul, qgate_split, rope_yarn, kv_append,
+    head_rmsnorm, attn_decode, gate_mul_cast, qgate_split, rope_yarn, kv_append,
     HD, NQH, NKVH,
 )
 
@@ -60,7 +60,7 @@ comptime g32_layout = row_major[NH_V]()
 comptime n128_layout = row_major[SSTATE]()
 comptime emb_layout = row_major[VOCAB, H]()
 comptime vrow_layout = row_major[1, VOCAB]()
-comptime tok_layout = row_major[1]()
+comptime toks_layout = row_major[TMAX]()
 
 comptime w_h_qf = row_major[H, QF]()
 comptime w_h_h = row_major[H, H]()
@@ -225,34 +225,29 @@ def main() raises:
 
     # --- activations / state -------------------------------------------------
     var x_d = ctx.enqueue_create_buffer[f32](H)
-    var cur_d = ctx.enqueue_create_buffer[f32](H)
     var curb_d = ctx.enqueue_create_buffer[bf16](H)
     var qkv_d = ctx.enqueue_create_buffer[f32](CONV)
     var z_d = ctx.enqueue_create_buffer[f32](H)
-    var araw_d = ctx.enqueue_create_buffer[f32](NH_V)
-    var braw_d = ctx.enqueue_create_buffer[f32](NH_V)
     var eg_d = ctx.enqueue_create_buffer[f32](NH_V)
     var beta_d = ctx.enqueue_create_buffer[f32](NH_V)
     var conv_d = ctx.enqueue_create_buffer[f32](CONV)
     var so_d = ctx.enqueue_create_buffer[f32](NH_V * SSTATE)
-    var res_d = ctx.enqueue_create_buffer[f32](H)
     var resb_d = ctx.enqueue_create_buffer[bf16](H)
-    var out_d = ctx.enqueue_create_buffer[f32](H)
     var qf_d = ctx.enqueue_create_buffer[f32](QF)
     var q_d = ctx.enqueue_create_buffer[f32](NQH * HD)
     var gate_d = ctx.enqueue_create_buffer[f32](H)
     var k_d = ctx.enqueue_create_buffer[f32](KV)
     var v_d = ctx.enqueue_create_buffer[f32](KV)
     var ao_d = ctx.enqueue_create_buffer[f32](NQH * HD)
-    var fg_d = ctx.enqueue_create_buffer[f32](FFN)
     var fgb_d = ctx.enqueue_create_buffer[bf16](FFN)
     var logits_d = ctx.enqueue_create_buffer[f32](VOCAB)
-    var tok_d = ctx.enqueue_create_buffer[DType.int32](1)
+    var toks_d = ctx.enqueue_create_buffer[DType.int32](TMAX)
 
     var p_qf_d = ctx.enqueue_create_buffer[f32](SPLITK * SM * QF)
     var p_h_d = ctx.enqueue_create_buffer[f32](SPLITK * SM * H)
     var p_kv_d = ctx.enqueue_create_buffer[f32](SPLITK * SM * KV)
     var p_32_d = ctx.enqueue_create_buffer[f32](SPLITK * SM * NH_V)
+    var p_32b_d = ctx.enqueue_create_buffer[f32](SPLITK * SM * NH_V)
     var p_ffn_d = ctx.enqueue_create_buffer[f32](SPLITK * SM * FFN)
     var p_ffn2_d = ctx.enqueue_create_buffer[f32](SPLITK * SM * FFN)
     var p_v_d = ctx.enqueue_create_buffer[f32](SPLITK * SM * VOCAB)
@@ -268,12 +263,9 @@ def main() raises:
     ctx.synchronize()
 
     # --- kernel bindings -----------------------------------------------------
-    comptime rms_k = rmsnorm[type_of(h2_layout), type_of(h_layout), type_of(h2_layout)]
-    comptime cast_h = cast_bf16[type_of(h_layout), type_of(h_layout)]
-    comptime cast_ffn = cast_bf16[type_of(ffn_layout), type_of(ffn_layout)]
-    comptime add_k = residual_add[type_of(h_layout), type_of(h_layout)]
-    comptime embed_k = embed_lookup[type_of(emb_layout), type_of(h2_layout)]
-    comptime argmax_k = argmax_row[type_of(vrow_layout), type_of(tok_layout)]
+    comptime rmsc_k = rmsnorm_cast[type_of(h2_layout), type_of(h_layout), type_of(h2_layout)]
+    comptime embed_k = embed_lookup_pos[type_of(emb_layout), type_of(h2_layout), type_of(toks_layout)]
+    comptime argmax_k = argmax_pos[type_of(vrow_layout), type_of(toks_layout)]
 
     comptime g_qf = matmul_skinny[bf16, type_of(h2_layout), type_of(w_h_qf), type_of(p_qf)]
     comptime g_h = matmul_skinny[bf16, type_of(h2_layout), type_of(w_h_h), type_of(p_h)]
@@ -285,13 +277,12 @@ def main() raises:
     comptime r_qf = skinny_reduce[type_of(p_qf), type_of(c_qf)]
     comptime r_h = skinny_reduce[type_of(p_h), type_of(c_h)]
     comptime r_kv = skinny_reduce[type_of(p_kv), type_of(c_kv)]
-    comptime r_32 = skinny_reduce[type_of(p_32), type_of(c_32)]
-    comptime r_swiglu = skinny_reduce_swiglu[type_of(p_ffn), type_of(c_ffn)]
+    comptime r_add = skinny_reduce_add[type_of(p_h), type_of(h_layout)]
+    comptime r_swiglu = skinny_reduce_swiglu_bf16[type_of(p_ffn), type_of(c_ffn)]
     comptime r_head = skinny_reduce[type_of(p_v), type_of(vrow_layout)]
 
-    comptime gates_k = ssm_gates[
-        type_of(g32_layout), type_of(g32_layout), type_of(g32_layout),
-        type_of(g32_layout), type_of(g32_layout)
+    comptime rgates_k = ssm_reduce_gates[
+        type_of(p_32), type_of(g32_layout), type_of(g32_layout)
     ]
     comptime conv_k = ssm_conv[
         type_of(conv_layout), type_of(cs_layout), type_of(cw_layout), type_of(conv_layout)
@@ -300,7 +291,7 @@ def main() raises:
     comptime delta_k = ssm_delta_step[
         type_of(s_layout), type_of(conv_layout), type_of(g32_layout), type_of(o_layout)
     ]
-    comptime gated_k = ssm_gated_out[
+    comptime gated_k = ssm_gated_out_bf16[
         type_of(o_layout), type_of(h_layout), type_of(n128_layout), type_of(h_layout)
     ]
     comptime split_k = qgate_split[type_of(qf_layout), type_of(q_layout), type_of(h_layout)]
@@ -310,35 +301,32 @@ def main() raises:
     comptime rope_k = rope_yarn[type_of(kvh_layout)]
     comptime append_k = kv_append[type_of(cache_layout), type_of(kvh_layout)]
     comptime att_k = attn_decode[type_of(q_layout), type_of(cache_layout), type_of(q_layout)]
-    comptime gmul_k = gate_mul[type_of(h_layout), type_of(h_layout)]
+    comptime gmul_k = gate_mul_cast[type_of(h_layout), type_of(h_layout), type_of(h_layout)]
 
     # --- decode loop ---------------------------------------------------------
     var X1 = TileTensor(x_d, h_layout)
     var X2 = TileTensor(x_d, h2_layout)
-    var Cur1 = TileTensor(cur_d, h_layout)
-    var Cur2 = TileTensor(cur_d, h2_layout)
-    var CurB1 = TileTensor(curb_d, h_layout)
     var CurB2 = TileTensor(curb_d, h2_layout)
     var Logits2 = TileTensor(logits_d, vrow_layout)
-    var Tok = TileTensor(tok_d, tok_layout)
+    var Toks = TileTensor(toks_d, toks_layout)
     var Pv = TileTensor(p_v_d, p_v)
 
     var Embd = tens_bf16(ctx, wbuf, off[0], VOCAB * H, emb_layout)
 
     var n_total = len(prompt) + GEN_N
-    var generated = List[Int]()
-    var next_tok = prompt[0]
+    var toks_h = ctx.enqueue_create_host_buffer[DType.int32](TMAX)
+    ctx.synchronize()
+    for i in range(TMAX):
+        toks_h[i] = 0
+    for i in range(len(prompt)):
+        toks_h[i] = Int32(prompt[i])
+    ctx.enqueue_copy(dst_buf=toks_d, src_buf=toks_h)
+    ctx.synchronize()
     var t0 = perf_counter_ns()
 
     for pos in range(n_total - 1):
-        var tok: Int
-        if pos < len(prompt):
-            tok = prompt[pos]
-        else:
-            tok = next_tok
-
         ctx.enqueue_function[embed_k](
-            Embd, X2, Int32(tok), Int32(H),
+            Embd, X2, Toks, Int32(pos), Int32(H),
             grid_dim=(ceildiv(H, 256), 1), block_dim=256,
         )
 
@@ -347,11 +335,10 @@ def main() raises:
         var att_i = 0
         for layer in range(N_LAYERS):
             # -- attention / ssm sub-block --
-            ctx.enqueue_function[rms_k](
-                X2, tens_f32(ctx, wbuf, off[w], H, h_layout), Cur2,
+            ctx.enqueue_function[rmsc_k](
+                X2, tens_f32(ctx, wbuf, off[w], H, h_layout), CurB2,
                 Int32(H), Float32(1e-6), grid_dim=1, block_dim=256,
             )
-            ctx.enqueue_function[cast_h](Cur1, CurB1, Int32(H), grid_dim=ceildiv(H, 256), block_dim=256)
 
             if is_attn(layer):
                 var Wq = tens_bf16(ctx, wbuf, off[w + 1], H * QF, w_h_qf)
@@ -385,8 +372,6 @@ def main() raises:
                 var Ao1 = TileTensor(ao_d, h_layout)
                 var AoB1 = TileTensor(resb_d, h_layout)
                 var AoB2 = TileTensor(resb_d, h2_layout)
-                var Out1 = TileTensor(out_d, h_layout)
-                var Out2 = TileTensor(out_d, c_h)
 
                 ctx.enqueue_function[g_qf](CurB2, Wq, Pqf, Int32(1), Int32(QF), Int32(H), grid_dim=(ceildiv(QF, SBN), SPLITK), block_dim=SK_THREADS)
                 ctx.enqueue_function[r_qf](Pqf, Qf2, Int32(1), Int32(QF), grid_dim=ceildiv(QF, 256), block_dim=256)
@@ -402,11 +387,9 @@ def main() raises:
                 ctx.enqueue_function[append_k](Kc, Khd, Int32(pos), grid_dim=NKVH, block_dim=HD)
                 ctx.enqueue_function[append_k](Vc, Vhd, Int32(pos), grid_dim=NKVH, block_dim=HD)
                 ctx.enqueue_function[att_k](Q, Kc, Vc, Ao, Int32(pos + 1), Float32(0.0625), grid_dim=NQH, block_dim=HD)
-                ctx.enqueue_function[gmul_k](Ao1, Gate1, Int32(H), grid_dim=ceildiv(H, 256), block_dim=256)
-                ctx.enqueue_function[cast_h](Ao1, AoB1, Int32(H), grid_dim=ceildiv(H, 256), block_dim=256)
+                ctx.enqueue_function[gmul_k](Ao1, Gate1, AoB1, Int32(H), grid_dim=ceildiv(H, 256), block_dim=256)
                 ctx.enqueue_function[g_h](AoB2, Wo, Ph, Int32(1), Int32(H), Int32(H), grid_dim=(ceildiv(H, SBN), SPLITK), block_dim=SK_THREADS)
-                ctx.enqueue_function[r_h](Ph, Out2, Int32(1), Int32(H), grid_dim=ceildiv(H, 256), block_dim=256)
-                ctx.enqueue_function[add_k](Out1, X1, Int32(H), grid_dim=ceildiv(H, 256), block_dim=256)
+                ctx.enqueue_function[r_add](Ph, X1, Int32(1), Int32(H), grid_dim=ceildiv(H, 256), block_dim=256)
                 att_i += 1
                 w += 7
             else:
@@ -422,14 +405,11 @@ def main() raises:
                 var Pq = TileTensor(p_qf_d, p_qf)
                 var Ph = TileTensor(p_h_d, p_h)
                 var Pab = TileTensor(p_32_d, p_32)
+                var Pab2 = TileTensor(p_32b_d, p_32)
                 var Qkv1 = TileTensor(qkv_d, conv_layout)
                 var Qkv2 = TileTensor(qkv_d, c_qf)
                 var Z1 = TileTensor(z_d, h_layout)
                 var Z2 = TileTensor(z_d, c_h)
-                var Araw1 = TileTensor(araw_d, g32_layout)
-                var Araw2 = TileTensor(araw_d, c_32)
-                var Braw1 = TileTensor(braw_d, g32_layout)
-                var Braw2 = TileTensor(braw_d, c_32)
                 var Eg = TileTensor(eg_d, g32_layout)
                 var Beta = TileTensor(beta_d, g32_layout)
                 var csb = DeviceBuffer[f32](
@@ -454,57 +434,42 @@ def main() raises:
                 var S0_w = TileTensor(s0b_w, s_layout)
                 var Conv = TileTensor(conv_d, conv_layout)
                 var So = TileTensor(so_d, o_layout)
-                var Res1 = TileTensor(res_d, h_layout)
                 var ResB1 = TileTensor(resb_d, h_layout)
                 var ResB2 = TileTensor(resb_d, h2_layout)
-                var Out1 = TileTensor(out_d, h_layout)
-                var Out2 = TileTensor(out_d, c_h)
 
                 ctx.enqueue_function[g_qf](CurB2, Wqkv, Pq, Int32(1), Int32(CONV), Int32(H), grid_dim=(ceildiv(CONV, SBN), SPLITK), block_dim=SK_THREADS)
                 ctx.enqueue_function[r_qf](Pq, Qkv2, Int32(1), Int32(CONV), grid_dim=ceildiv(CONV, 256), block_dim=256)
                 ctx.enqueue_function[g_h](CurB2, Wz, Ph, Int32(1), Int32(H), Int32(H), grid_dim=(ceildiv(H, SBN), SPLITK), block_dim=SK_THREADS)
                 ctx.enqueue_function[r_h](Ph, Z2, Int32(1), Int32(H), grid_dim=ceildiv(H, 256), block_dim=256)
                 ctx.enqueue_function[g_32](CurB2, Wa, Pab, Int32(1), Int32(NH_V), Int32(H), grid_dim=(1, SPLITK), block_dim=SK_THREADS)
-                ctx.enqueue_function[r_32](Pab, Araw2, Int32(1), Int32(NH_V), grid_dim=1, block_dim=256)
-                ctx.enqueue_function[g_32](CurB2, Wb, Pab, Int32(1), Int32(NH_V), Int32(H), grid_dim=(1, SPLITK), block_dim=SK_THREADS)
-                ctx.enqueue_function[r_32](Pab, Braw2, Int32(1), Int32(NH_V), grid_dim=1, block_dim=256)
-                ctx.enqueue_function[gates_k](Araw1, Braw1, Eg, Beta, SsmA, DtB, grid_dim=1, block_dim=NH_V)
+                ctx.enqueue_function[g_32](CurB2, Wb, Pab2, Int32(1), Int32(NH_V), Int32(H), grid_dim=(1, SPLITK), block_dim=SK_THREADS)
+                ctx.enqueue_function[rgates_k](Pab, Pab2, Eg, Beta, SsmA, DtB, grid_dim=1, block_dim=NH_V)
                 ctx.enqueue_function[conv_k](Qkv1, Cs, Cw, Conv, Cs_w, grid_dim=ceildiv(CONV, 256), block_dim=256)
                 ctx.enqueue_function[l2_k](Conv, grid_dim=NH_V, block_dim=SSTATE)
                 ctx.enqueue_function[delta_k](S0, S0_w, Conv, Eg, Beta, So, grid_dim=NH_V, block_dim=SSTATE)
-                ctx.enqueue_function[gated_k](So, Z1, Nw, Res1, grid_dim=NH_V, block_dim=SSTATE)
-                ctx.enqueue_function[cast_h](Res1, ResB1, Int32(H), grid_dim=ceildiv(H, 256), block_dim=256)
+                ctx.enqueue_function[gated_k](So, Z1, Nw, ResB1, grid_dim=NH_V, block_dim=SSTATE)
                 ctx.enqueue_function[g_h](ResB2, Wsout, Ph, Int32(1), Int32(H), Int32(H), grid_dim=(ceildiv(H, SBN), SPLITK), block_dim=SK_THREADS)
-                ctx.enqueue_function[r_h](Ph, Out2, Int32(1), Int32(H), grid_dim=ceildiv(H, 256), block_dim=256)
-                ctx.enqueue_function[add_k](Out1, X1, Int32(H), grid_dim=ceildiv(H, 256), block_dim=256)
+                ctx.enqueue_function[r_add](Ph, X1, Int32(1), Int32(H), grid_dim=ceildiv(H, 256), block_dim=256)
                 ssm_i += 1
                 w += 10
 
             # -- ffn sub-block --
-            ctx.enqueue_function[rms_k](
-                X2, tens_f32(ctx, wbuf, off[w], H, h_layout), Cur2,
+            ctx.enqueue_function[rmsc_k](
+                X2, tens_f32(ctx, wbuf, off[w], H, h_layout), CurB2,
                 Int32(H), Float32(1e-6), grid_dim=1, block_dim=256,
             )
-            ctx.enqueue_function[cast_h](Cur1, CurB1, Int32(H), grid_dim=ceildiv(H, 256), block_dim=256)
             var Wfg = tens_bf16(ctx, wbuf, off[w + 1], H * FFN, w_h_ffn)
             var Wfu = tens_bf16(ctx, wbuf, off[w + 2], H * FFN, w_h_ffn)
             var Wfd = tens_bf16(ctx, wbuf, off[w + 3], FFN * H, w_ffn_h)
             var Pg = TileTensor(p_ffn_d, p_ffn)
             var Pu = TileTensor(p_ffn2_d, p_ffn)
             var Ph2 = TileTensor(p_h_d, p_h)
-            var Fg1 = TileTensor(fg_d, ffn_layout)
-            var Fg2 = TileTensor(fg_d, c_ffn)
-            var FgB1 = TileTensor(fgb_d, ffn_layout)
             var FgB2 = TileTensor(fgb_d, row_major[1, FFN]())
-            var Out1 = TileTensor(out_d, h_layout)
-            var Out2 = TileTensor(out_d, c_h)
             ctx.enqueue_function[g_ffn](CurB2, Wfg, Pg, Int32(1), Int32(FFN), Int32(H), grid_dim=(ceildiv(FFN, SBN), SPLITK), block_dim=SK_THREADS)
             ctx.enqueue_function[g_ffn](CurB2, Wfu, Pu, Int32(1), Int32(FFN), Int32(H), grid_dim=(ceildiv(FFN, SBN), SPLITK), block_dim=SK_THREADS)
-            ctx.enqueue_function[r_swiglu](Pg, Pu, Fg2, Int32(1), Int32(FFN), grid_dim=ceildiv(FFN, 256), block_dim=256)
-            ctx.enqueue_function[cast_ffn](Fg1, FgB1, Int32(FFN), grid_dim=ceildiv(FFN, 256), block_dim=256)
+            ctx.enqueue_function[r_swiglu](Pg, Pu, FgB2, Int32(1), Int32(FFN), grid_dim=ceildiv(FFN, 256), block_dim=256)
             ctx.enqueue_function[g_down](FgB2, Wfd, Ph2, Int32(1), Int32(H), Int32(FFN), grid_dim=(ceildiv(H, SBN), SPLITK), block_dim=SK_THREADS)
-            ctx.enqueue_function[r_h](Ph2, Out2, Int32(1), Int32(H), grid_dim=ceildiv(H, 256), block_dim=256)
-            ctx.enqueue_function[add_k](Out1, X1, Int32(H), grid_dim=ceildiv(H, 256), block_dim=256)
+            ctx.enqueue_function[r_add](Ph2, X1, Int32(1), Int32(H), grid_dim=ceildiv(H, 256), block_dim=256)
             w += 4
 
             if pos == 0:
@@ -515,25 +480,26 @@ def main() raises:
                 print("dbg L", layer, ":", dbg[0], dbg[1], dbg[2], dbg[3])
 
         # -- head --
-        ctx.enqueue_function[rms_k](
-            X2, tens_f32(ctx, wbuf, off[w], H, h_layout), Cur2,
-            Int32(H), Float32(1e-6), grid_dim=1, block_dim=256,
-        )
-        ctx.enqueue_function[cast_h](Cur1, CurB1, Int32(H), grid_dim=ceildiv(H, 256), block_dim=256)
-        var Whead = tens_bf16(ctx, wbuf, off[w + 1], H * VOCAB, w_h_v)
-        ctx.enqueue_function[g_head](CurB2, Whead, Pv, Int32(1), Int32(VOCAB), Int32(H), grid_dim=(ceildiv(VOCAB, SBN), SPLITK), block_dim=SK_THREADS)
-        ctx.enqueue_function[r_head](Pv, Logits2, Int32(1), Int32(VOCAB), grid_dim=ceildiv(VOCAB, 256), block_dim=256)
-        ctx.enqueue_function[argmax_k](Logits2, Tok, Int32(VOCAB), grid_dim=1, block_dim=256)
-
-        var tok_h = ctx.enqueue_create_host_buffer[DType.int32](1)
-        ctx.enqueue_copy(dst_buf=tok_h, src_buf=tok_d)
-        ctx.synchronize()
-        next_tok = Int(tok_h[0])
         if pos >= len(prompt) - 1:
-            generated.append(next_tok)
-            print("gen:", next_tok)
+            ctx.enqueue_function[rmsc_k](
+                X2, tens_f32(ctx, wbuf, off[w], H, h_layout), CurB2,
+                Int32(H), Float32(1e-6), grid_dim=1, block_dim=256,
+            )
+            var Whead = tens_bf16(ctx, wbuf, off[w + 1], H * VOCAB, w_h_v)
+            ctx.enqueue_function[g_head](CurB2, Whead, Pv, Int32(1), Int32(VOCAB), Int32(H), grid_dim=(ceildiv(VOCAB, SBN), SPLITK), block_dim=SK_THREADS)
+            ctx.enqueue_function[r_head](Pv, Logits2, Int32(1), Int32(VOCAB), grid_dim=ceildiv(VOCAB, 256), block_dim=256)
+            ctx.enqueue_function[argmax_k](Logits2, Toks, Int32(VOCAB), Int32(pos + 1), grid_dim=1, block_dim=256)
 
+    var t_host = Float64(perf_counter_ns() - t0) / 1e9
+    ctx.synchronize()
     var dt = Float64(perf_counter_ns() - t0) / 1e9
+    print("host_enqueue_s:", t_host, " gpu_total_s:", dt)
+    ctx.enqueue_copy(dst_buf=toks_h, src_buf=toks_d)
+    ctx.synchronize()
+    var generated = List[Int]()
+    for i in range(len(prompt), n_total):
+        generated.append(Int(toks_h[i]))
+        print("gen:", Int(toks_h[i]))
     print("tokens:", len(generated), " total_s:", dt, " tok/s:", Float64(n_total - 1) / dt)
     var line = String("")
     for i in range(len(generated)):

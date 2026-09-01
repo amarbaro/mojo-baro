@@ -5,6 +5,8 @@ from max.gpu.memory import AddressSpace
 from max.gpu.sync import barrier
 from layout import TileTensor, TensorLayout, row_major, stack_allocation
 
+from matmul_skinny import SPLITK
+
 comptime f32 = DType.float32
 comptime CONV = 8192
 comptime KDIM = 2048
@@ -65,6 +67,33 @@ def ssm_gates[
     BetaOut[h] = rebind[BetaOut.ElementType](1 / (1 + exp(-braw)))
     var araw = rebind[Scalar[f32]](AlphaRaw[h]) + rebind[Scalar[f32]](DtBias[h])
     var sp = log1p(exp(araw))
+    EgOut[h] = rebind[EgOut.ElementType](exp(sp * rebind[Scalar[f32]](SsmA[h])))
+
+
+def ssm_reduce_gates[
+    PLayout: TensorLayout, GLayout: TensorLayout, DLayout: TensorLayout
+](
+    Ap: TileTensor[f32, PLayout, MutAnyOrigin],
+    Bp: TileTensor[f32, PLayout, MutAnyOrigin],
+    EgOut: TileTensor[f32, GLayout, MutAnyOrigin],
+    BetaOut: TileTensor[f32, GLayout, MutAnyOrigin],
+    SsmA: TileTensor[f32, DLayout, MutAnyOrigin],
+    DtBias: TileTensor[f32, DLayout, MutAnyOrigin],
+):
+    comptime assert Ap.flat_rank == 3 and Bp.flat_rank == 3
+    comptime assert EgOut.flat_rank == 1 and BetaOut.flat_rank == 1
+    comptime assert SsmA.flat_rank == 1 and DtBias.flat_rank == 1
+    var h = global_idx.x
+    if h >= NH_V:
+        return
+    var araw: Scalar[f32] = 0
+    var braw: Scalar[f32] = 0
+    comptime for s in range(SPLITK):
+        araw += rebind[Scalar[f32]](Ap[s, 0, h])
+        braw += rebind[Scalar[f32]](Bp[s, 0, h])
+    BetaOut[h] = rebind[BetaOut.ElementType](1 / (1 + exp(-braw)))
+    var asum = araw + rebind[Scalar[f32]](DtBias[h])
+    var sp = log1p(exp(asum))
     EgOut[h] = rebind[EgOut.ElementType](exp(sp * rebind[Scalar[f32]](SsmA[h])))
 
 
@@ -196,4 +225,37 @@ def ssm_gated_out[
     var z = rebind[Scalar[f32]](Z[h * SSTATE + j])
     Res[h * SSTATE + j] = rebind[Res.ElementType](
         v * scale * rebind[Scalar[f32]](NormW[j]) * (z / (1 + exp(-z)))
+    )
+
+
+def ssm_gated_out_bf16[
+    OLayout: TensorLayout, ZLayout: TensorLayout, NLayout: TensorLayout,
+    RLayout: TensorLayout
+](
+    O: TileTensor[f32, OLayout, MutAnyOrigin],
+    Z: TileTensor[f32, ZLayout, MutAnyOrigin],
+    NormW: TileTensor[f32, NLayout, MutAnyOrigin],
+    Res: TileTensor[DType.bfloat16, RLayout, MutAnyOrigin],
+):
+    comptime assert O.flat_rank == 2 and Z.flat_rank == 1
+    comptime assert NormW.flat_rank == 1 and Res.flat_rank == 1
+    var h = block_idx.x
+    var j = thread_idx.x
+    var v = rebind[Scalar[f32]](O[h, j])
+    var ssq = warp.sum(v * v)
+    var sums = stack_allocation[f32, address_space = AddressSpace.SHARED](
+        row_major[SSTATE // WARP_SIZE]()
+    )
+    if lane_id() == 0:
+        sums[j // WARP_SIZE] = rebind[sums.ElementType](ssq)
+    barrier()
+    var total: Float32 = 0
+    comptime for w in range(SSTATE // WARP_SIZE):
+        total += rebind[Scalar[f32]](sums[w])
+    var scale = rsqrt(total / Float32(SSTATE) + SSM_EPS)
+    var z = rebind[Scalar[f32]](Z[h * SSTATE + j])
+    Res[h * SSTATE + j] = rebind[Res.ElementType](
+        (
+            v * scale * rebind[Scalar[f32]](NormW[j]) * (z / (1 + exp(-z)))
+        ).cast[DType.bfloat16]()
     )
