@@ -104,3 +104,19 @@ Frozen predictions:
    split-K/grid-shape changes instead.
 Claim rule: engine adoption only if the winning arm beats v1 by
 >= 10% AND the engine token gate stays 16/16.
+
+## Result v3 2026-09-01 (10 repeats, llama-server DOWN, GPU exclusive)
+
+| arm | us/launch | prediction | verdict |
+|---|---|---|---|
+| v1 (1 col/thread) | 194.1–194.8 | baseline | reproduced |
+| v2 CPT=2 | 150.7–151.4 | — | 1.29x |
+| v2 CPT=4 | 140.0–140.7 | 130–165 | held |
+| v2 CPT=8 | 138.8–139.8 | regress vs CPT=4 | **MISSED — best arm, 1.40x** |
+| hipblaslt f16 | 125.1–127.8 | reference | vendor still 1.10x ahead |
+
+Effective bandwidth: v1 517 -> v2c8 723 GB/s (75% of peak). The
+wide-load mechanism held; the occupancy-collapse prediction for 64
+accumulator lanes did not (32 more f32 regs is affordable here).
+Adoption rule met (1.40x >= 1.10x floor) -> engine moves to CPT=8,
+token gate must stay 16/16.

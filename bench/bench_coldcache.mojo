@@ -17,7 +17,7 @@ from layout import TileTensor, row_major
 
 from baro import Baro
 from matmul_skinny import (
-    matmul_skinny, matmul_skinny_q8b,
+    matmul_skinny, matmul_skinny_q8b, matmul_skinny_v2,
     SM, SBN, SPLITK, SK_THREADS, Q8_BLOCK,
 )
 
@@ -97,6 +97,15 @@ def main() raises:
     comptime skinny_q8b = matmul_skinny_q8b[
         type_of(a_layout), type_of(qt_layout), type_of(st_layout), type_of(p_layout)
     ]
+    comptime skinny_v2_c2 = matmul_skinny_v2[
+        bf16, 2, type_of(a_layout), type_of(b_layout), type_of(p_layout)
+    ]
+    comptime skinny_v2_c4 = matmul_skinny_v2[
+        bf16, 4, type_of(a_layout), type_of(b_layout), type_of(p_layout)
+    ]
+    comptime skinny_v2_c8 = matmul_skinny_v2[
+        bf16, 8, type_of(a_layout), type_of(b_layout), type_of(p_layout)
+    ]
     var tp = t_dev.unsafe_ptr()
     var qtp = qt_dev.unsafe_ptr()
     var stp = st_dev.unsafe_ptr()
@@ -114,7 +123,7 @@ def main() raises:
         ctx.enqueue_copy(dst_buf=hb, src_buf=h16_host)
     ctx.synchronize()
 
-    print("rep blay_us q8b_us vendor_us r_blay r_vendor")
+    print("rep blay_us v2c2_us v2c4_us v2c8_us vendor_us")
     for rep in range(REPEATS):
         w0 = perf_counter_ns()
         while Float64(perf_counter_ns() - w0) / 1.0e9 < 1.0:
@@ -138,33 +147,65 @@ def main() raises:
         ctx.synchronize()
         var blay_us = Float64(perf_counter_ns() - t0) / 1.0e3 / Float64(ITERS)
 
+        comptime G2 = (ceildiv(N, SK_THREADS * 2), SPLITK)
         w0 = perf_counter_ns()
         while Float64(perf_counter_ns() - w0) / 1.0e9 < 1.0:
             for b in range(NBUF):
-                var qtb = DeviceBuffer[DType.int8](ctx, qtp + b * N * K, N * K, owning=False)
-                var stb = DeviceBuffer[f32](
-                    ctx, stp + b * N * K // Q8_BLOCK, N * K // Q8_BLOCK, owning=False
-                )
-                ctx.enqueue_function[skinny_q8b](
-                    A, TileTensor(qtb, qt_layout), TileTensor(stb, st_layout),
-                    Cp, Int32(M), Int32(N), Int32(K),
-                    grid_dim=SGRID, block_dim=SK_THREADS,
+                var tb = DeviceBuffer[bf16](ctx, tp + b * N * K, N * K, owning=False)
+                ctx.enqueue_function[skinny_v2_c2](
+                    A, TileTensor(tb, b_layout), Cp, Int32(M), Int32(N), Int32(K),
+                    grid_dim=G2, block_dim=SK_THREADS,
                 )
             ctx.synchronize()
         t0 = perf_counter_ns()
         for it in range(ITERS):
-            var b = it % NBUF
-            var qtb = DeviceBuffer[DType.int8](ctx, qtp + b * N * K, N * K, owning=False)
-            var stb = DeviceBuffer[f32](
-                ctx, stp + b * N * K // Q8_BLOCK, N * K // Q8_BLOCK, owning=False
-            )
-            ctx.enqueue_function[skinny_q8b](
-                A, TileTensor(qtb, qt_layout), TileTensor(stb, st_layout),
-                Cp, Int32(M), Int32(N), Int32(K),
-                grid_dim=SGRID, block_dim=SK_THREADS,
+            var tb = DeviceBuffer[bf16](ctx, tp + (it % NBUF) * N * K, N * K, owning=False)
+            ctx.enqueue_function[skinny_v2_c2](
+                A, TileTensor(tb, b_layout), Cp, Int32(M), Int32(N), Int32(K),
+                grid_dim=G2, block_dim=SK_THREADS,
             )
         ctx.synchronize()
-        var q8b_us = Float64(perf_counter_ns() - t0) / 1.0e3 / Float64(ITERS)
+        var v2c2_us = Float64(perf_counter_ns() - t0) / 1.0e3 / Float64(ITERS)
+
+        comptime G4 = (ceildiv(N, SK_THREADS * 4), SPLITK)
+        w0 = perf_counter_ns()
+        while Float64(perf_counter_ns() - w0) / 1.0e9 < 1.0:
+            for b in range(NBUF):
+                var tb = DeviceBuffer[bf16](ctx, tp + b * N * K, N * K, owning=False)
+                ctx.enqueue_function[skinny_v2_c4](
+                    A, TileTensor(tb, b_layout), Cp, Int32(M), Int32(N), Int32(K),
+                    grid_dim=G4, block_dim=SK_THREADS,
+                )
+            ctx.synchronize()
+        t0 = perf_counter_ns()
+        for it in range(ITERS):
+            var tb = DeviceBuffer[bf16](ctx, tp + (it % NBUF) * N * K, N * K, owning=False)
+            ctx.enqueue_function[skinny_v2_c4](
+                A, TileTensor(tb, b_layout), Cp, Int32(M), Int32(N), Int32(K),
+                grid_dim=G4, block_dim=SK_THREADS,
+            )
+        ctx.synchronize()
+        var v2c4_us = Float64(perf_counter_ns() - t0) / 1.0e3 / Float64(ITERS)
+
+        comptime G8 = (ceildiv(N, SK_THREADS * 8), SPLITK)
+        w0 = perf_counter_ns()
+        while Float64(perf_counter_ns() - w0) / 1.0e9 < 1.0:
+            for b in range(NBUF):
+                var tb = DeviceBuffer[bf16](ctx, tp + b * N * K, N * K, owning=False)
+                ctx.enqueue_function[skinny_v2_c8](
+                    A, TileTensor(tb, b_layout), Cp, Int32(M), Int32(N), Int32(K),
+                    grid_dim=G8, block_dim=SK_THREADS,
+                )
+            ctx.synchronize()
+        t0 = perf_counter_ns()
+        for it in range(ITERS):
+            var tb = DeviceBuffer[bf16](ctx, tp + (it % NBUF) * N * K, N * K, owning=False)
+            ctx.enqueue_function[skinny_v2_c8](
+                A, TileTensor(tb, b_layout), Cp, Int32(M), Int32(N), Int32(K),
+                grid_dim=G8, block_dim=SK_THREADS,
+            )
+        ctx.synchronize()
+        var v2c8_us = Float64(perf_counter_ns() - t0) / 1.0e3 / Float64(ITERS)
 
         var baro = Baro()
         var pa = Int(a16_dev.unsafe_ptr())
@@ -181,6 +222,6 @@ def main() raises:
         var lt_us = Float64(perf_counter_ns() - t0) / 1.0e3 / Float64(ITERS)
 
         print(
-            rep, " ", blay_us, " ", q8b_us, " ", lt_us, " ",
-            blay_us / q8b_us, " ", lt_us / q8b_us,
+            rep, " ", blay_us, " ", v2c2_us, " ", v2c4_us, " ",
+            v2c8_us, " ", lt_us,
         )

@@ -77,6 +77,74 @@ def matmul_skinny[
             Cp[block_idx.y, i, col] = rebind[Cp.ElementType](acc[i])
 
 
+def matmul_skinny_v2[
+    in_dtype: DType, CPT: Int,
+    ALayout: TensorLayout, BLayout: TensorLayout, PLayout: TensorLayout
+](
+    A: TileTensor[in_dtype, ALayout, MutAnyOrigin],
+    B: TileTensor[in_dtype, BLayout, MutAnyOrigin],
+    Cp: TileTensor[dtype, PLayout, MutAnyOrigin],
+    m: Int32,
+    n: Int32,
+    k_dim: Int32,
+):
+    comptime assert A.flat_rank == 2 and B.flat_rank == 2 and Cp.flat_rank == 3
+
+    var M = Int(m)
+    var N = Int(n)
+    var K = Int(k_dim)
+
+    var tid = thread_idx.x
+    var c0 = (block_idx.x * SK_THREADS + tid) * CPT
+
+    var kslice = (K + SPLITK - 1) // SPLITK
+    var k0 = block_idx.y * kslice
+    var k1 = min(k0 + kslice, K)
+
+    var sa = stack_allocation[dtype, address_space=AddressSpace.SHARED](
+        row_major[KCHUNK, SM]()
+    )
+    var sav = sa.vectorize[1, SM]()
+    var Bv = B.vectorize[1, CPT]()
+
+    var acc = SIMD[dtype, SM * CPT](0)
+
+    var kk = k0
+    while kk < k1:
+        var clen = min(KCHUNK, k1 - kk)
+
+        comptime for i in range(SM * KCHUNK // SK_THREADS):
+            var e = tid + i * SK_THREADS
+            var r = e // KCHUNK
+            var kc = e % KCHUNK
+            var g = kk + kc
+            sa[kc, r] = rebind[sa.ElementType](
+                rebind[Scalar[in_dtype]](A[r, g]).cast[
+                    dtype
+                ]() if r < M and kc < clen else 0
+            )
+        barrier()
+
+        if c0 < N:
+            for k in range(clen):
+                var b_vec = rebind[SIMD[in_dtype, CPT]](
+                    Bv[kk + k, c0 // CPT]
+                ).cast[dtype]()
+                var a_vec = rebind[SIMD[dtype, SM]](sav[k, 0])
+                comptime for i in range(SM):
+                    comptime for j in range(CPT):
+                        acc[i * CPT + j] += a_vec[i] * b_vec[j]
+        barrier()
+        kk += KCHUNK
+
+    if c0 < N:
+        comptime for i in range(SM):
+            comptime for j in range(CPT):
+                Cp[block_idx.y, i, c0 + j] = rebind[Cp.ElementType](
+                    acc[i * CPT + j]
+                )
+
+
 comptime Q8_BLOCK = 32
 
 
