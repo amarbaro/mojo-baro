@@ -144,3 +144,17 @@ Frozen predictions:
    MTP/q8 (steps 4–8 of the plan).
 Claim rule: engine adoption only if m1 beats v2 by >= 5% at M=1 AND
 the 64-token gate passes bit-identically.
+
+## Result v4 2026-09-01 (10 repeats, server DOWN, GPU exclusive)
+
+| arm | us/launch | prediction | verdict |
+|---|---|---|---|
+| v2 CPT=8 @ M=1 | 137.8–138.9 | 135–145 | held |
+| m1 CPT=8 | 121.2–121.8 | 117–135 (3–12% over v2) | **held, 12.3% — top of band** |
+| m1 CPT=4 | 123.5–124.3 | — | worse than CPT=8 |
+| hipblaslt f16 @ M=1 | 122.1–123.3 | reference | one 817 us outlier (rep 8) excluded, disclosed |
+
+m1c8's range sits strictly below the vendor's (121.8 < 122.1): first
+cold-cache vendor beat at the engine's actual decode shape, margin ~1%.
+Occupancy-relief mechanism confirmed (traffic identical, only
+registers/LDS shrank). Adoption rule met (12.3% >= 5%).

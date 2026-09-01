@@ -145,6 +145,63 @@ def matmul_skinny_v2[
                 )
 
 
+def matmul_skinny_m1[
+    in_dtype: DType, CPT: Int,
+    ALayout: TensorLayout, BLayout: TensorLayout, PLayout: TensorLayout
+](
+    A: TileTensor[in_dtype, ALayout, MutAnyOrigin],
+    B: TileTensor[in_dtype, BLayout, MutAnyOrigin],
+    Cp: TileTensor[dtype, PLayout, MutAnyOrigin],
+    m: Int32,
+    n: Int32,
+    k_dim: Int32,
+):
+    comptime assert A.flat_rank == 2 and B.flat_rank == 2 and Cp.flat_rank == 3
+
+    var N = Int(n)
+    var K = Int(k_dim)
+
+    var tid = thread_idx.x
+    var c0 = (block_idx.x * SK_THREADS + tid) * CPT
+
+    var kslice = (K + SPLITK - 1) // SPLITK
+    var k0 = block_idx.y * kslice
+    var k1 = min(k0 + kslice, K)
+
+    var sa = stack_allocation[dtype, address_space=AddressSpace.SHARED](
+        row_major[KCHUNK]()
+    )
+    var Bv = B.vectorize[1, CPT]()
+
+    var acc = SIMD[dtype, CPT](0)
+
+    var kk = k0
+    while kk < k1:
+        var clen = min(KCHUNK, k1 - kk)
+
+        if tid < KCHUNK:
+            sa[tid] = rebind[sa.ElementType](
+                rebind[Scalar[in_dtype]](A[0, kk + tid]).cast[
+                    dtype
+                ]() if tid < clen else 0
+            )
+        barrier()
+
+        if c0 < N:
+            for k in range(clen):
+                var b_vec = rebind[SIMD[in_dtype, CPT]](
+                    Bv[kk + k, c0 // CPT]
+                ).cast[dtype]()
+                var a_val = rebind[Scalar[dtype]](sa[k])
+                acc += b_vec * a_val
+        barrier()
+        kk += KCHUNK
+
+    if c0 < N:
+        comptime for j in range(CPT):
+            Cp[block_idx.y, 0, c0 + j] = rebind[Cp.ElementType](acc[j])
+
+
 comptime Q8_BLOCK = 32
 
 
