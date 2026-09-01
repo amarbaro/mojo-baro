@@ -24,6 +24,13 @@ def w_str(out, s):
     out.write(b)
 
 
+def key(k):
+    """Kernel/engine sources are keyed by basename (engine imports them flat);
+    anything else keeps its repo-relative path so the closure can rebuild it."""
+    rel = k.resolve().relative_to(Path(__file__).resolve().parent.parent).as_posix()
+    return k.name if rel.startswith(("kernels/", "serve/")) else rel
+
+
 def main():
     src, dst = Path(sys.argv[1]), Path(sys.argv[2])
     kfiles = [Path(p) for p in sys.argv[3:]]
@@ -40,11 +47,11 @@ def main():
         capture_output=True, text=True).stdout.strip()
     new_kv = [("baro.kernel.arch", "gfx1100"),
               ("baro.kernel.commit", commit),
-              ("baro.kernel.files", ",".join(k.name for k in kfiles))]
+              ("baro.kernel.files", ",".join(key(k) for k in kfiles))]
     if os.environ.get("BARO_KERNEL_PARENT"):
         new_kv.append(("baro.kernel.parent", os.environ["BARO_KERNEL_PARENT"]))
     for k in kfiles:
-        new_kv.append((f"baro.kernel.src.{k.name}", k.read_text()))
+        new_kv.append((f"baro.kernel.src.{key(k)}", k.read_text()))
 
     out = open(dst, "wb")
     out.write(struct.pack("<4sI", b"GGUF", 3))
