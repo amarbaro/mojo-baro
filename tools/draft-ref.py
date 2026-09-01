@@ -123,7 +123,7 @@ class GGUFTensors:
     """Thin lazy-load wrapper over tools/gguf-extract.py's parse() output."""
 
     def __init__(self, path):
-        self.f, self.infos, self.data_start, self.kv = gguf_parse(path)
+        self.f, self.infos, self.data_start, self.kv = gguf_parse(str(Path(path).expanduser()))
 
     def get(self, name):
         dims, ttype, offset = self.infos[name]
@@ -225,12 +225,33 @@ def draft_forward(gt: GGUFTensors, tok: int, h_in: np.ndarray, pos: int = 0) -> 
 
 
 def compare(ref_logits: np.ndarray, engine_logits_path: str,
-            cos_thresh: float = 0.999, rel_err_thresh: float = 1e-2) -> bool:
+            cos_thresh: float = 0.9995, rel_err_thresh: float = 5000.0) -> bool:
     """Report top-1 agreement, cosine similarity, and max relative error.
 
     All THREE are always reported — cosine alone is the known silent-
     corruption signature for this class of bug (high cosine, differing
     argmax), so a top-1 mismatch fails the gate even when cosine is high.
+
+    Thresholds MEASURED 2026-09-01 via /tmp/.../scratchpad/calibrate.py, which
+    ran draft_forward() twice on the REAL Qwythos-9B blk.32 weights — once
+    with every GEMM-input boundary bf16-round-tripped (rne(), matching the
+    engine's amar_rmsnorm_cast + bf16 GEMM inputs / f32 accumulation) and
+    once left pure f32 — across 10 (token, random h_in, pos) trials:
+      top1_match: 10/10 (always agrees under pure bf16 noise)
+      cosine:     min=0.99998081 median=0.99999535 max=1.00000548
+      max_rel_err: min=2.6785e+02 median=6.9059e+02 max=1.5958e+03
+    (max_rel_err is large in absolute terms because the per-element relative
+    error formula is dominated by logits near zero — that's inherent to the
+    metric, not a sign of corruption; judge it by the clean-vs-corrupt gap,
+    not by proximity to 0.)
+    cos_thresh=0.9995 sits ~25x the observed clean deviation from 1.0 below
+    the observed floor (1 - 0.9995 = 5e-4 vs. observed 1 - min = 1.9e-5).
+    rel_err_thresh=5000 sits ~3.1x above the observed clean max (1596).
+    Falsification: swapping the eh_proj enorm/hnorm concat halves (the known
+    silent-corruption mode, docs/mtp-notes.md §2 step 4) on the same trial
+    gave top1_match=False, cosine=0.1354, max_rel_err=8.636e+04 — rejected on
+    all three counts, with max_rel_err ~17x above this threshold and cosine
+    catastrophically below cos_thresh.
     """
     eng_logits = np.fromfile(engine_logits_path, dtype=np.float32)
     if eng_logits.shape != ref_logits.shape:
