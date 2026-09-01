@@ -135,6 +135,129 @@ described above — the two [4096,8192]-shaped tensors in the prompt (attn_qkv v
 SSM-block's own qkv/gate) are separate weight matrices per layer type; a full-attention
 layer does NOT carry `ssm_*` tensors, and an SSM layer does NOT carry `wq/wk/wv`.
 
+## 7b. Full-attention block — verified details
+
+Source: `/home/mario/llama.cpp/src/models/qwen35.cpp` `build_layer_attn` (lines 258-337),
+`ggml_rope_multi` impl in `/home/mario/llama.cpp/ggml/src/ggml-cpu/ops.cpp`
+(`ggml_mrope_cache_init` 5858-5926, `rope_yarn` 5825-5840, dispatch ~5995-6100),
+YaRN corr-dims in `/home/mario/llama.cpp/ggml/src/ggml.c` (`ggml_rope_yarn_corr_dim`
+4406-4408, `ggml_rope_yarn_corr_dims` 4410-4418), hparams loading in
+`/home/mario/llama.cpp/src/llama-model.cpp` (n_rot/key_length ~1326-1343, rope type
+switch ~2951-2955, rope_freq_scale_train ~1301-1319).
+
+**§7 was wrong on head_dim: it's 256, not 128.** `hparams.n_embd_head_k_full` /
+`n_embd_head_v` default to `n_embd/n_head` but are overridden by
+`attention.key_length`/`value_length` in the GGUF (qwen35.cpp:264-265 asserts
+`n_embd_head_v() == n_embd_head_k()`). GGUF says `attention.key_length=256`,
+`head_count=16` (q), `head_count_kv=4`, so `n_embd_head = 256`. wq is `4096->8192`
+because it's a joint query+gate projection: `8192 = 256(head_dim) * 2(q+gate) * 16(n_head)`.
+wk/wv are `4096->1024 = 256 * 4(n_head_kv)`, matching q/k norm weight shape `[256]`.
+
+**1. Q/gate split (qwen35.cpp:270-297).** `Qcur_full = wq @ cur` → shape
+`[8192, n_tokens]`, logically `[(head_dim*2)=512, n_head=16, n_tokens]` with per-head
+stride 512 elems. Per-head slice is NOT interleaved element-pairwise — it's a
+contiguous 512-wide block split into two contiguous halves:
+- `Qcur` (line 273-275): `ggml_view_3d(Qcur_full, n_embd_head=256, n_head, n_tokens, nb1=elemsize*256*2, nb2=elemsize*256*2*16, offset=0)` — first 256 of each 512-wide head slice, contiguous.
+- `gate` (line 293-297): same view shape/strides but `offset = elemsize*256` — second 256 of each head slice, contiguous. Then `ggml_cont_2d` flattens/materializes it to `[4096, n_tokens]` (line 297).
+
+So per head: `[q(256 contiguous) | gate(256 contiguous)]`, not interleaved — §7's
+"0::2 interleave" description was wrong; it's a plain contiguous half/half split via
+strided view, same split shape for every head.
+
+K/V have no gate: `Kcur = wk @ cur` reshaped directly to `[256, n_head_kv=4, n_tokens]`
+(line 289), same for V (line 300).
+
+**2. RMSNorm placement (qwen35.cpp:278-280 for Q, 288-291 for K).** Applied per-head
+over the full 256-wide head_dim, BEFORE RoPE: `Qcur = build_norm(Qcur, attn_q_norm,
+nullptr, LLM_NORM_RMS, il)` right after the view (line 279), and
+`Kcur = build_norm(Kcur, attn_k_norm, ...)` right after K's reshape (line 290) — both
+precede the `ggml_rope_multi` calls at lines 303-313. `build_norm`
+(`llama-graph.cpp:1580-1613`) dispatches `LLM_NORM_RMS` to
+`ggml_rms_norm(ctx0, cur, hparams.f_norm_rms_eps)` — eps = whatever
+`attention.layer_norm_rms_epsilon` sets in the GGUF (loaded qwen35.cpp:5,
+`load_arch_hparams`), no separate q/k-norm eps key. Weight `attn_q_norm`/`attn_k_norm`
+is `[256]` = one scale per head_dim element, broadcast identically across all heads
+(shared weight, not per-head).
+
+**3. rope_type = IMROPE, not NEOX.** `llama-model.cpp` rope-type switch (~2951-2955):
+`LLM_ARCH_QWEN35` (and QWEN35MOE/QWEN3VL/QWEN4EXP/QWEN3TTS) → `LLAMA_ROPE_TYPE_IMROPE`
+(`GGML_ROPE_TYPE_IMROPE = 40`, `ggml.h:254`), i.e. interleaved M-RoPE — comment at
+`ggml.h:1871`: `n_dims=16 --> [ttyxttyxttyxttyx00]` (per-dim-group interleave of
+t/h/w/e sections, cos/sin still applied in NEOX pairing/ordering — NOT plain NEOX,
+NOT classic non-interleaved MRoPE). Dispatch confirms `is_imrope = (mode ==
+GGML_ROPE_TYPE_IMROPE)` (`ops.cpp:6015`), `mrope_used = mode & GGML_ROPE_TYPE_MROPE`
+also true for IMROPE since 40 & 8 != 0 (`ops.cpp:6016`), so it goes through
+`ggml_mrope_cache_init` (`ops.cpp:5858-5926`), not the plain `ggml_rope_cache_init`.
+
+**n_dims / rotated width.** `n_rot` passed into `ggml_rope_multi` (qwen35.cpp:305) is
+`hparams.n_rot(il)`, loaded from `LLM_KV_ROPE_DIMENSION_COUNT`
+(`rope.dimension_count`) if present, else defaulting to `n_embd_head_k_full`
+(`llama-model.cpp:1335-1338`). If the GGUF sets `rope.dimension_count=64`, only the
+first 64 of the 256 head_dim elements are rotated by RoPE; the remaining 192 dims
+pass through `ggml_rope_multi` unrotated (standard llama.cpp partial-rotary behavior
+— rope ops only touch `[0, n_dims)`, dims `[n_dims, head_dim)` are copied through
+unchanged). This is architecturally identical to Qwen2-VL/Qwen3-VL's partial-rotary
+M-RoPE, just with head_dim widened to 256 and Q carrying a fused gate.
+
+**sections [11,11,10,0] / position source.** `sections` = `hparams.rope_sections`,
+loaded via `LLM_KV_ROPE_DIMENSION_SECTIONS` with 4 required entries
+(qwen35.cpp:6, `get_key_or_arr(..., 4, true)`); copied into a local `int sections[4]`
+before the rope call (qwen35.cpp:507/144). `11+11+10+0 = 32` half-dim sections
+(each section counts in units of rotated-dim/2 = pairs; `2*32=64` matches
+`n_rot=64` exactly — confirms n_dims=64 is the rotated width, not 256).
+`ggml_mrope_cache_init` (`ops.cpp:5858-5926`) walks `i0` in `[0, n_dims)` step 2,
+computes `sector` from the running pair index mod `sect_dims`, and for IMROPE
+(`is_imrope=true`, `indep_sects=false` branch) picks `theta_t/theta_h/theta_w/theta_e`
+in a `sector % 3` interleave pattern (t/h/w cycling every 3, `e` used once sector
+exceeds `3*sections[i]` bound) — i.e. within each 3-slot group one slot is time,
+one height, one width, cycling, with `sections[3]=0` meaning the `e` (extra/vision)
+position id is essentially unused for text-only decode (no vision tokens ⇒
+`theta_e` branch never reached, or degenerates to the same value as time since
+`inp_pos` supplies only one position stream per token here — qwen35 is text-only,
+so t/h/w collapse to the same scalar position per token; the section split still
+runs, but with identical `theta_t=theta_h=theta_w` since `build_layer_attn`'s
+`inp_pos` is a single 1-D position array, not the 4-stream position tensor
+Qwen-VL's mrope preprocessing builds). Confirm from call site: qwen35.cpp:303-313
+passes a single `inp_pos` (not a 4-row multi-pos tensor) into `ggml_rope_multi`,
+consistent with §7's "text-only position" hypothesis — all sections rotate against
+the same token position, the section split is structurally present but numerically
+inert (t=h=w=e all equal) for pure-text sequences.
+
+**4. YaRN.** `freq_base=10000000` (`rope.freq_base`), `ext_factor`/`attn_factor` come
+from `hparams.rope_ext_factor`/`rope_attn_factor` (loaded via
+`LLM_KV_ROPE_SCALING_ATTN_FACTOR` etc., `llama-model.cpp` ~1300), `freq_scale =
+hparams.rope_freq_scale_train = 1/ropescale` where `ropescale` is
+`LLM_KV_ROPE_SCALING_FACTOR` (`llama-model.cpp:1315-1319`) — with `scaling.factor=4.0`
+this gives `freq_scale = 0.25`. `n_ctx_orig` = `hparams.n_ctx_orig_yarn`, loaded from
+`LLM_KV_ROPE_SCALING_ORIG_CTX_LEN` = `original_context_length=262144`
+(`llama-model.cpp:1301`). `beta_fast`/`beta_slow` are the standard llama.cpp YaRN
+defaults (32.0 / 1.0) unless the GGUF overrides them (no qwen35-specific override
+found in `load_arch_hparams`).
+
+Corrected-frequency math (`ggml.c:4404-4418`, `ops.cpp:5825-5840`), pseudocode:
+```
+corr_dim(n_rot, base) = n_dims * ln(n_ctx_orig / (n_rot * 2π)) / (2 * ln(base))
+low  = floor(corr_dim(beta_fast, freq_base))     # more rotations/faster-changing dims
+high = ceil (corr_dim(beta_slow, freq_base))      # fewer rotations/slower dims
+low, high = clamp(low, 0, n_dims-1), clamp(high, 0, n_dims-1)
+
+# per rotated dim pair i0 (0..n_dims step 2), per theta stream (t/h/w/e per IMROPE section):
+theta_extrap = theta_base * (freq_base^(-i0/n_dims))    # via running theta *= theta_scale each step
+theta_interp = freq_scale * theta_extrap                 # freq_scale = 1/yarn_factor = 0.25
+ramp = clamp((i0/2 - low) / max(high-low, 0.001), 0, 1) * ext_factor   # rope_yarn_ramp
+theta = theta_interp * (1 - ramp) + theta_extrap * ramp
+mscale = attn_factor * (1 + 0.1 * ln(1/freq_scale))       # magnitude correction, only if ext_factor != 0
+cos, sin = cos(theta) * mscale, sin(theta) * mscale
+```
+i.e. low-frequency (slowly rotating) dims get full NTK interpolation (`theta_interp`,
+scaled down by 0.25 for the 4x context extension), high-frequency dims stay
+extrapolated (`theta_extrap`, unscaled), with a smooth ramp between `low`/`high`
+correction-dim bounds — standard YaRN, applied independently within each of the
+`n_dims=64` rotated positions, replicated across the 4 sections (each section's
+`theta_t/h/w/e` stream uses the same `corr_dims`/`freq_scale`/`ext_factor`, only the
+starting `theta_base_*` differs per position stream — moot here since t=h=w=e for
+text-only decode per point 3 above).
+
 ## Summary of activation functions used (SSM block)
 - beta: sigmoid
 - alpha path: softplus(alpha + dt.bias), then multiplied by stored -exp(A_log) (`ssm_a`) to form log-decay `g`
