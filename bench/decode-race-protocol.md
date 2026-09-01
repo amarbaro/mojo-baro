@@ -105,3 +105,39 @@ already `timings.predicted_per_second`, the same convention
 this preregistration. No new "Ours" tok/s number — from `tok/s_gen`
 or otherwise — may be cited as a claim until a fresh run is executed
 and recorded under this section per the claim rule above.
+
+### v5 verdict (2026-09-01, run at `c8cf219` + print cleanup)
+
+Procedure as frozen above: BARO pack, 5-token prompt, GEN_N = 64,
+greedy, f32 KV, no speculation. 5 runs, first discarded, median of 4.
+
+| run | `tok/s_gen` | `tok/s_total` |
+|---|---|---|
+| 1 (discarded) | 41.385 | 40.540 |
+| 2 | 41.042 | 40.203 |
+| 3 | 41.377 | 40.529 |
+| 4 | 41.274 | 40.415 |
+| 5 | 41.371 | 40.496 |
+
+**Median `tok/s_gen` = 41.32** (spread 0.8%, inside the 10% void
+rule). `prefill_s` 0.0565–0.0576 s; the prefill window is ~3.7% of
+wall time at this prompt length, which is why `tok/s_total` (40.48)
+sits only ~2% below `tok/s_gen` here and would diverge sharply on a
+long prompt.
+
+Against the unchanged bars: **0.94x arm B (44.1)** and **0.38x arm A
+(109.8)**. 77% of the 53.6 tok/s HBM roof, vs llama.cpp's 82%.
+
+**Prediction status: NONE FROZEN.** The v5 section registered the
+instrument change but never wrote a predicted range for `Ours`, and
+this run was executed before that omission was noticed. So this is a
+recorded measurement, not a confirmed prediction, and it earns no
+credit as one. The earlier "trails arm B by 1.73x, gap is launch
+count not GEMM bandwidth" reasoning is now stale — under the correct
+denominator the trunk gap is 1.06x, so any launch-overhead claim
+needs its own preregistration and a profile, not an inference from
+this table.
+
+**Where the real gap is**: arm A. The 2.5x from MTP speculative
+decode dwarfs the 6% trunk gap. `blk.32` is implemented and validated
+against the numpy reference but remains dump-only.

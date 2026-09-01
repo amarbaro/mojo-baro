@@ -672,8 +672,12 @@ def main() raises:
         generated.append(Int(toks_h[i]))
     var prefill_s = Float64(t_prefill_end - t0) / 1e9
     var decode_s = dt - prefill_s
-    print("tokens:", len(generated), " total_s:", dt, " tok/s:", Float64(GEN_N) / dt)
-    print("prefill_s:", prefill_s, " decode_s:", decode_s, " tok/s_total:", Float64(GEN_N) / dt, " tok/s_gen:", Float64(GEN_N - 1) / decode_s)
+    # tok/s_gen is the only number comparable to llama.cpp: it divides
+    # GEN_N - 1 by decode time alone, matching timings.predicted_per_second.
+    # tok/s_total includes prefill and is reported for completeness only --
+    # it is not the engine's throughput against any external baseline.
+    print("tokens:", len(generated), " prefill_s:", prefill_s, " decode_s:", decode_s)
+    print("tok/s_total:", Float64(GEN_N) / dt, " tok/s_gen:", Float64(GEN_N - 1) / decode_s)
     var line = String("")
     for i in range(len(generated)):
         line += String(generated[i]) + " "

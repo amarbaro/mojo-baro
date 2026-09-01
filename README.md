@@ -66,13 +66,35 @@ llama.cpp on the same file, verified by `tools/check-tokens.sh` against a
 reference token-id array. It is a correctness vehicle for the kernels, not a
 product — no server, no batching, no sampler beyond greedy.
 
-**Throughput is deliberately not quoted here yet.** The engine's tok/s and
-llama.cpp's `timings.predicted_per_second` are not the same measurement:
-llama.cpp divides `n_gen - 1` by generation time *excluding* prompt eval, while
-the engine currently divides all generated tokens by wall time *including*
-prefill. Any ratio between the two would be wrong in our favour or against it,
-and we don't yet know which. The engine is being reinstrumented to split the
-prefill/decode timer boundary before a comparison goes in this file.
+### Throughput against llama.cpp
+
+The engine reports two numbers, and only one of them is comparable to anything.
+`tok/s_gen` divides `GEN_N - 1` by decode time alone, which is exactly what
+llama.cpp's `timings.predicted_per_second` measures; `tok/s_total` includes
+prefill and is reported for completeness only. Quoting `tok/s_total` against
+llama.cpp would flatter or damage us depending on prompt length, not on kernel
+quality.
+
+Measured on the same box and the same bf16 GGUF, 5-token prompt, 64 tokens,
+greedy, no speculative decode. Repeat rule from
+[`bench/decode-race-protocol.md`](bench/decode-race-protocol.md): 5 runs,
+discard the first, median of the remaining 4.
+
+| | tok/s | of HBM roof (53.6) |
+|---|---|---|
+| llama.cpp, no MTP | 44.1 | 82% |
+| **mojo-baro `tok/s_gen`** | **41.3** (41.04–41.38, 0.8% spread) | 77% |
+| llama.cpp, MTP speculative | 109.8 | — |
+
+So the trunk decode path runs at **0.94x llama.cpp** with no speculative
+decode. Disclosed asymmetries, uncorrected: llama.cpp uses a q8_0 KV cache and
+ours is f32 (negligible at these context lengths), and llama.cpp's number came
+through an HTTP server while ours is measured in-process.
+
+The 2.5x sitting in llama.cpp's MTP column is the real gap, not the 6%. The
+MTP draft head (`blk.32`) is implemented and numerically validated against a
+numpy reference, but it is still dump-only — nothing is drafted or verified in
+the decode loop yet, so no speculative number belongs in this table.
 
 ## Layout
 
