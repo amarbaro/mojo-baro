@@ -15,6 +15,7 @@ import json
 import pathlib
 import re
 import os
+import signal
 import subprocess
 import sys
 
@@ -52,9 +53,6 @@ def wmma_combos():
         if not (64 <= threads <= 512):
             continue
         blk_m, blk_n, blk_k = wm * tm * 16, wn * tn * 16, 16
-        # Staging loops assume the tiles divide evenly across the block.
-        if (blk_m * blk_k) % threads or (blk_k * blk_n) % threads:
-            continue
         # fp16 LDS footprint; keep well under 64 KB so occupancy stays high.
         if (blk_m * blk_k + blk_k * blk_n) * 2 > 32 * 1024:
             continue
@@ -103,6 +101,7 @@ def main():
     T = TARGETS[args.target]
     SRC, OUT = T["src"], T["out"]
 
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))
     original = SRC.read_text()
     BENCH = ROOT / T["bench"]
     bench_original = BENCH.read_text()

@@ -30,3 +30,19 @@ up to 10% (it is the latency regime). Any arm's receipt = the `blk`, `warps`,
 ## Receipts
 
 Filled in as steps land; each row cites the commit that produced it.
+
+### Clock/power receipt, 2026-09-01, commit 8f7feed
+
+12 back-to-back `bench_fp16` runs at 4096^3, `rocm-smi -P -c -t` sampled at 1 Hz
+from a separate process (`.work/smi-probe.log`): package power 5 W idle ->
+291-307 W; sclk 15 MHz -> 3005-3008 MHz; junction 52 C -> 75-81 C; 43.0k-44.5k
+GFLOP/s on every run. During a sweep the card idles ~95% of wall time (compile
+dominates), so cool cores there are duty cycle, not a measurement artefact.
+
+### Step 1 receipt, commit 4092125
+
+| size | blk | warps | wtile | grid | block | base | step 1 |
+|---|---|---|---|---|---|---|---|
+| 512^3 | 128x64x16 | 4x4 | 2x1 | 8x4 | 512 | 9158 | 14293 |
+| 2048^3 | 128x64x16 | 4x4 | 2x1 | 32x16 | 512 | 26800 | 39881 |
+| 4096^3 | 128x64x16 | 4x4 | 2x1 | 64x32 | 512 | 26632 | 42733 |
