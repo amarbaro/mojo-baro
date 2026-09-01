@@ -36,3 +36,11 @@ widen the region to whole-layer rewrites instead of more iterations.
 
 | iter | region | identities | candidates | survivors | champion before -> after | gguf |
 |---|---|---|---|---|---|---|
+| 001 (2026-09-01, commit 7833260) | ffn (52%) | 18-skeptic, 19-builder, 20-stranger | 3 | 0 | 41.3 -> 41.3 | none |
+
+Iteration 001 notes: prompt 25k chars (bindings + ffn region + elementwise +
+matmul_skinny). All three failed before any timed run: no diff fence; patch
+does not apply (invented `g_ffn`, `Wfg`, `g_ffn_fused`); compiles against an
+invented `w_h_ffn2` and silently dropped the up and down projections. The
+ladder held. Proposer quality, not the gate, is the bottleneck: next iteration
+gives the model a symbol table of real binding names and a smaller region.
