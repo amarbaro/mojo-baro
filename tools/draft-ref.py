@@ -225,33 +225,36 @@ def draft_forward(gt: GGUFTensors, tok: int, h_in: np.ndarray, pos: int = 0) -> 
 
 
 def compare(ref_logits: np.ndarray, engine_logits_path: str,
-            cos_thresh: float = 0.9995, rel_err_thresh: float = 5000.0) -> bool:
-    """Report top-1 agreement, cosine similarity, and max relative error.
+            cos_thresh: float = 0.9999, abs_err_thresh: float = 0.15,
+            rel_topk_thresh: float = 0.015, topk: int = 64) -> bool:
+    """Report top-1 agreement, cosine, max absolute error, and top-K relative error.
 
-    All THREE are always reported — cosine alone is the known silent-
-    corruption signature for this class of bug (high cosine, differing
-    argmax), so a top-1 mismatch fails the gate even when cosine is high.
+    All FOUR are reported and all four must pass. Cosine alone is the known
+    silent-corruption signature for this class of bug (high cosine, differing
+    argmax), so a top-1 mismatch fails the gate regardless of the numerics.
 
-    Thresholds MEASURED 2026-09-01 via /tmp/.../scratchpad/calibrate.py, which
-    ran draft_forward() twice on the REAL Qwythos-9B blk.32 weights — once
-    with every GEMM-input boundary bf16-round-tripped (rne(), matching the
-    engine's amar_rmsnorm_cast + bf16 GEMM inputs / f32 accumulation) and
-    once left pure f32 — across 10 (token, random h_in, pos) trials:
-      top1_match: 10/10 (always agrees under pure bf16 noise)
-      cosine:     min=0.99998081 median=0.99999535 max=1.00000548
-      max_rel_err: min=2.6785e+02 median=6.9059e+02 max=1.5958e+03
-    (max_rel_err is large in absolute terms because the per-element relative
-    error formula is dominated by logits near zero — that's inherent to the
-    metric, not a sign of corruption; judge it by the clean-vs-corrupt gap,
-    not by proximity to 0.)
-    cos_thresh=0.9995 sits ~25x the observed clean deviation from 1.0 below
-    the observed floor (1 - 0.9995 = 5e-4 vs. observed 1 - min = 1.9e-5).
-    rel_err_thresh=5000 sits ~3.1x above the observed clean max (1596).
-    Falsification: swapping the eh_proj enorm/hnorm concat halves (the known
-    silent-corruption mode, docs/mtp-notes.md §2 step 4) on the same trial
-    gave top1_match=False, cosine=0.1354, max_rel_err=8.636e+04 — rejected on
-    all three counts, with max_rel_err ~17x above this threshold and cosine
-    catastrophically below cos_thresh.
+    Thresholds are MEASURED, not guessed. Calibration 2026-09-01: 10 trials on
+    real Qwythos-9B blk.32 weights, comparing pure-f32 against bf16
+    round-tripped at every GEMM-input boundary (what the GPU actually rounds):
+
+      top1_match  10/10
+      cosine      min 0.99998081  median 0.99999535
+      max_abs_err min 3.901e-02   median 4.591e-02   max 5.036e-02
+      rel_top64   min 1.667e-03   median 2.523e-03   max 4.140e-03
+
+    Falsified against the documented silent-corruption mode -- swapping the
+    eh_proj concat halves (docs/mtp-notes.md section 2 step 4):
+
+      top1_match False  cosine 0.13541251  max_abs_err 1.729e+01  rel_top64 1.536e+00
+
+    Thresholds sit ~3x above clean noise and ~100x below that corruption:
+    cosine 0.9999 (5x the clean deviation from 1.0), max_abs_err 0.15 (3.0x the
+    clean max, 115x below corrupted), rel_top64 0.015 (3.6x the clean max, 102x
+    below corrupted).
+
+    Full-vector relative error is deliberately NOT used -- see the note in the
+    body. It reads ~1e3 on clean noise and separated real corruption by only
+    17x, which is not a gate.
     """
     eng_logits = np.fromfile(engine_logits_path, dtype=np.float32)
     if eng_logits.shape != ref_logits.shape:
@@ -265,18 +268,24 @@ def compare(ref_logits: np.ndarray, engine_logits_path: str,
 
     denom = np.linalg.norm(ref_logits) * np.linalg.norm(eng_logits)
     cosine = float(np.dot(ref_logits, eng_logits) / denom) if denom > 0 else 0.0
+    cosine = min(1.0, max(-1.0, cosine))          # clamp fp drift past +/-1
 
-    rel_eps = 1e-6
-    max_rel_err = float(np.max(np.abs(ref_logits - eng_logits) / (np.abs(ref_logits) + rel_eps)))
+    max_abs_err = float(np.max(np.abs(ref_logits - eng_logits)))
+
+    # Relative error only over the top-K logits by |ref|. Full-vector relative
+    # error is meaningless here: entries near zero blow the ratio up to ~1e3
+    # under clean bf16 noise, which is why an earlier revision had to set the
+    # ceiling at 5000 and would have passed real corruption by only 17x.
+    idx = np.argsort(np.abs(ref_logits))[-topk:]
+    rel_topk = float(np.max(np.abs(ref_logits[idx] - eng_logits[idx]) / np.abs(ref_logits[idx])))
 
     print(f"top1_ref={top1_ref} top1_engine={top1_eng} top1_match={top1_match}")
     print(f"cosine_similarity={cosine:.8f}")
-    print(f"max_relative_error={max_rel_err:.6e}")
+    print(f"max_abs_error={max_abs_err:.6e}")
+    print(f"rel_error_top{topk}={rel_topk:.6e}")
 
-    # PROVISIONAL thresholds — not yet calibrated against a real engine dump
-    # (the engine cannot emit draft logits yet). Recalibrate once a known-
-    # good bf16-accumulation-noise baseline exists.
-    passed = top1_match and cosine >= cos_thresh and max_rel_err <= rel_err_thresh
+    passed = (top1_match and cosine >= cos_thresh
+              and max_abs_err <= abs_err_thresh and rel_topk <= rel_topk_thresh)
     print(f"GATE: {'PASS' if passed else 'FAIL'}")
     return passed
 
