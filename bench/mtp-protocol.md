@@ -1,5 +1,10 @@
 # MTP draft-head protocol — frozen before first run (M5 item 5)
 
+> **Binding: [`bench/PROTOCOL-RULES.md`](PROTOCOL-RULES.md).** P1 in particular:
+> every parameter defining an arm is read back from the running system and
+> recorded BEFORE the timed run. No receipt, no arm.
+
+
 Question: does the model's own blk.32 draft head (NextN/MTP, `qwen35`
 architecture, `nextn_predict_layers=1`) earn its launch cost in our
 engine — i.e. does spending extra GPU launches on a draft-then-verify

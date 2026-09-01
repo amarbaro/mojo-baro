@@ -1,5 +1,10 @@
 # Decode race protocol — frozen before first run (M5 item 1)
 
+> **Binding: [`bench/PROTOCOL-RULES.md`](PROTOCOL-RULES.md).** P1 in particular:
+> every parameter defining an arm is read back from the running system and
+> recorded BEFORE the timed run. No receipt, no arm.
+
+
 Question: what is the llama.cpp GPU decode bar on this box for
 Qwythos-9B (bf16 GGUF, RX 7900 XTX), with and without MTP speculative
 decode, measured the same way our engine is measured — so that every
@@ -68,6 +73,24 @@ Only medians produced by this exact procedure may be recorded as
 "the bar". Any deviation (different prompt, n_predict, server flags)
 requires a new preregistration. Per-arm spread > 10% of median voids
 the arm.
+
+**P1 (`PROTOCOL-RULES.md`) binds every arm here.** Server arms must
+produce a receipt before their timed run:
+
+```sh
+./bench/verify-params.py --arm B --body .work/arms/arm-b.json \
+    --expect timings.draft_n=0 \
+    --out .work/receipts/arm-b.json
+```
+
+The probe sends the arm's own request body, so a per-request override
+this build ignores fails here instead of silently becoming the number.
+Missing key = unverifiable knob = define the arm by controlled restart.
+No receipt, no arm.
+
+Engine arms: rebuild the timed binary in the same command as the run,
+and record the run's own `prompt tokens:` / `tokens:` / `spec k:` lines
+as the receipt.
 
 ## v5 preregistration (2026-09-01) — denominator change, no new "Ours" number yet
 
@@ -141,3 +164,19 @@ this table.
 **Where the real gap is**: arm A. The 2.5x from MTP speculative
 decode dwarfs the 6% trunk gap. `blk.32` is implemented and validated
 against the numpy reference but remains dump-only.
+
+
+### P1 status of the v5 verdict (retroactive, disclosed)
+
+The v5 verdict above predates `PROTOCOL-RULES.md` and carries only a
+partial receipt. Verified at run time: the timed binary was rebuilt in
+the same command as the run, and the run printed `prompt tokens: 5` and
+`tokens: 64`. NOT read back: `GEN_N`, KV dtype and the no-speculation
+condition were taken from the source rather than from run output, and no
+receipt file was written.
+
+The engine has no per-request override layer, which is where the arm-B
+class of failure lives, so the exposure is low — but the standing was
+never established and this section is not a retro-issued receipt. The
+number stands as recorded; the next engine run under this protocol emits
+a proper receipt and supersedes it.

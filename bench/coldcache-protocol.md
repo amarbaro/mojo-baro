@@ -1,5 +1,10 @@
 # Cold-cache GEMM protocol — frozen before first run
 
+> **Binding: [`bench/PROTOCOL-RULES.md`](PROTOCOL-RULES.md).** P1 in particular:
+> every parameter defining an arm is read back from the running system and
+> recorded BEFORE the timed run. No receipt, no arm.
+
+
 Question: q8 (int8+scales, 1.19 B/elem) vs bf16 (2 B/elem) weight-native
 skinny GEMM throughput when weights are NOT Infinity-Cache resident — the
 real decode pattern, where ~30 distinct weight matrices cycle per token.
