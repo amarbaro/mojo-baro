@@ -1,14 +1,3 @@
-"""Elementwise/decode kernels for the engine: RMSNorm, RoPE, SwiGLU, softmax,
-embedding lookup, argmax.
-
-All are bandwidth-trivial at decode shapes (M <= 8); correctness is the work,
-so each has a host reference in test_elementwise.mojo. Activations are fp32
-on-device for now (bf16 conversion happens at the GEMM boundary); weights
-(norm gains, embedding table) arrive in their GGUF dtypes.
-
-Shapes are decode-oriented: one block per token row where possible, so the
-kernels stay correct for any M without a resize.
-"""
 
 from std.gpu import block_dim, block_idx, global_idx, lane_id, thread_idx, WARP_SIZE
 from std.gpu.primitives import warp
@@ -30,7 +19,6 @@ def rmsnorm[
     n: Int32,
     eps: Float32,
 ):
-    """One block per row: O[r, :] = X[r, :] * gain / rms(X[r, :])."""
     comptime assert X.flat_rank == 2 and G.flat_rank == 1 and O.flat_rank == 2
 
     var N = Int(n)
@@ -74,7 +62,6 @@ def swiglu[
     O: TileTensor[f32, OLayout, MutAnyOrigin],
     count: Int32,
 ):
-    """O = silu(Gate) * Up, flat over count elements."""
     comptime assert Gate.flat_rank == 1 and Up.flat_rank == 1 and O.flat_rank == 1
 
     var idx = global_idx.x
@@ -95,11 +82,6 @@ def rope_rows[
     pos: Int32,
     theta_base: Float32,
 ):
-    """In-place NeoX-style RoPE on X[r, h*head_dim : (h+1)*head_dim].
-
-    Pair (i, i + head_dim/2) within each head rotates by pos * theta^(-2i/d).
-    grid.x = rows (tokens at position pos+row), block covers pairs.
-    """
     comptime assert X.flat_rank == 2
 
     var row = block_idx.x
@@ -129,7 +111,6 @@ def softmax_rows[
     X: TileTensor[f32, XLayout, MutAnyOrigin],
     n: Int32,
 ):
-    """In-place numerically-stable softmax per row; one block per row."""
     comptime assert X.flat_rank == 2
 
     var N = Int(n)
@@ -188,7 +169,6 @@ def embed_lookup[
     token: Int32,
     n: Int32,
 ):
-    """O[block_idx.y, :] = fp32(Table[token, :]). Table is GGUF-native bf16."""
     comptime assert Table.flat_rank == 2 and O.flat_rank == 2
 
     var idx = global_idx.x
@@ -206,7 +186,6 @@ def argmax_row[
     Out: TileTensor[DType.int32, OLayout, MutAnyOrigin],
     n: Int32,
 ):
-    """Greedy sampling: Out[row] = argmax(X[row, :]); one block per row."""
     comptime assert X.flat_rank == 2 and Out.flat_rank == 1
 
     var N = Int(n)

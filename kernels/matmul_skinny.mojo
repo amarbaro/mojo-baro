@@ -1,20 +1,3 @@
-"""Tall-skinny split-K GEMM for decode shapes (M <= 8, large N/K).
-
-The square-tuned kernels lose 2.3x to hipBLASLt at M=1/8 for two structural
-reasons the 2026-09-01 roofline note pins down: BM32 pads 75% of every A tile
-when M=8, and the grid collapses to ~128 blocks (~1.3/CU) -- far too few
-resident waves to hide HBM latency on what is a pure bandwidth problem
-(streaming B once is ~all the mandatory traffic; ceiling ~3.8 TFLOP/s fp32).
-
-Design: BM = SM = 8 (no padding), one column per thread so B reads coalesce
-across the block, and split-K to multiply the grid: grid = (N/SBN, SPLITK) =
-32 x 16 = 512 blocks. Each block stages its A slice (8 x KCHUNK) in LDS --
-reads of it broadcast, so no pad needed -- streams its K-slice of B straight
-from global, and writes an fp32 partial tile. A second trivial kernel sums
-the SPLITK partials. Two-pass instead of float atomics: deterministic, and
-the partial traffic (2 x SPLITK x M x N x 4B = 4 MB) is ~6% of the 67 MB
-B stream at 8x4096x4096.
-"""
 
 from std.gpu import block_idx, global_idx, thread_idx
 from std.math import exp
@@ -42,11 +25,6 @@ def matmul_skinny[
     n: Int32,
     k_dim: Int32,
 ):
-    """A/B in `in_dtype` (fp32 or bf16 weights); accumulate and emit fp32.
-
-    bf16 halves the B stream, doubling the bandwidth roof; LDS keeps the A
-    slab in fp32 so the inner loop is a single cast on the B load.
-    """
     comptime assert A.flat_rank == 2 and B.flat_rank == 2 and Cp.flat_rank == 3
 
     var M = Int(m)
@@ -110,12 +88,6 @@ def matmul_skinny_wt[
     n: Int32,
     k_dim: Int32,
 ):
-    """skinny with W in GGUF-native [out, in] row-major layout (= B transposed).
-
-    C[m, col] = sum_k A[m, k] * W[col, k]. Each thread owns one output column
-    and walks its W row contiguously in k, so per-thread reads are sequential
-    rather than block-coalesced.
-    """
     comptime assert A.flat_rank == 2 and W.flat_rank == 2 and Cp.flat_rank == 3
 
     var M = Int(m)
@@ -186,14 +158,6 @@ def matmul_skinny_q8[
     n: Int32,
     k_dim: Int32,
 ):
-    """skinny_wt with int8 weights dequantized in-register.
-
-    Split layout (ours, not ggml's Q8_0): Wq [N, K] int8 quants,
-    Ws [N, K/32] fp32 per-block scales. 1.125 B/elem vs bf16's 2 --
-    the weight stream shrinks 1.8x, which is the whole point of decode
-    quantization. K-slices stay multiples of 32 (SPLITK guarantees it
-    for K % (SPLITK*32) == 0).
-    """
     comptime assert A.flat_rank == 2 and Wq.flat_rank == 2
     comptime assert Ws.flat_rank == 2 and Cp.flat_rank == 3
 
@@ -267,11 +231,6 @@ def matmul_skinny_q8b[
     n: Int32,
     k_dim: Int32,
 ):
-    """q8 in K-major (B) layout: quants [K, N] int8, scales [K/32, N] fp32.
-
-    Reads coalesce across threads exactly like the bf16 B-layout kernel;
-    the weight stream is 1.19 B/elem instead of 2.
-    """
     comptime assert A.flat_rank == 2 and Bq.flat_rank == 2
     comptime assert Bs.flat_rank == 2 and Cp.flat_rank == 3
 
@@ -337,11 +296,6 @@ def skinny_reduce_swiglu[
     m: Int32,
     n: Int32,
 ):
-    """Fused FFN epilogue: C = silu(sum Gp) * (sum Up).
-
-    Replaces two skinny_reduce launches plus a swiglu pass -- the reduce
-    already touches every output element, so the activation is free.
-    """
     comptime assert Gp.flat_rank == 3 and Up.flat_rank == 3 and C.flat_rank == 2
 
     var M = Int(m)
@@ -369,7 +323,6 @@ def skinny_reduce[
     m: Int32,
     n: Int32,
 ):
-    """Sum the SPLITK partial tiles into C. One thread per output element."""
     comptime assert Cp.flat_rank == 3 and C.flat_rank == 2
 
     var M = Int(m)
