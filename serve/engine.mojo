@@ -16,7 +16,7 @@ from layout import TileTensor, TensorLayout, row_major
 
 from elementwise import rmsnorm_cast, embed_lookup_pos, argmax_pos
 from matmul_skinny import (
-    matmul_skinny, skinny_reduce, skinny_reduce_add, skinny_reduce_swiglu_bf16,
+    matmul_skinny_v2, skinny_reduce, skinny_reduce_add, skinny_reduce_swiglu_bf16,
     SM, SBN, SPLITK, SK_THREADS,
 )
 from ssm import (
@@ -84,6 +84,8 @@ comptime c_ffn = row_major[1, FFN]()
 
 comptime B2 = 2
 comptime B4 = 4
+comptime CPT = 8
+comptime SBN2 = SK_THREADS * CPT
 
 
 def is_attn(i: Int) -> Bool:
@@ -267,13 +269,13 @@ def main() raises:
     comptime embed_k = embed_lookup_pos[type_of(emb_layout), type_of(h2_layout), type_of(toks_layout)]
     comptime argmax_k = argmax_pos[type_of(vrow_layout), type_of(toks_layout)]
 
-    comptime g_qf = matmul_skinny[bf16, type_of(h2_layout), type_of(w_h_qf), type_of(p_qf)]
-    comptime g_h = matmul_skinny[bf16, type_of(h2_layout), type_of(w_h_h), type_of(p_h)]
-    comptime g_kv = matmul_skinny[bf16, type_of(h2_layout), type_of(w_h_kv), type_of(p_kv)]
-    comptime g_32 = matmul_skinny[bf16, type_of(h2_layout), type_of(w_h_32), type_of(p_32)]
-    comptime g_ffn = matmul_skinny[bf16, type_of(h2_layout), type_of(w_h_ffn), type_of(p_ffn)]
-    comptime g_down = matmul_skinny[bf16, type_of(row_major[1, FFN]()), type_of(w_ffn_h), type_of(p_h)]
-    comptime g_head = matmul_skinny[bf16, type_of(h2_layout), type_of(w_h_v), type_of(p_v)]
+    comptime g_qf = matmul_skinny_v2[bf16, CPT, type_of(h2_layout), type_of(w_h_qf), type_of(p_qf)]
+    comptime g_h = matmul_skinny_v2[bf16, CPT, type_of(h2_layout), type_of(w_h_h), type_of(p_h)]
+    comptime g_kv = matmul_skinny_v2[bf16, CPT, type_of(h2_layout), type_of(w_h_kv), type_of(p_kv)]
+    comptime g_32 = matmul_skinny_v2[bf16, CPT, type_of(h2_layout), type_of(w_h_32), type_of(p_32)]
+    comptime g_ffn = matmul_skinny_v2[bf16, CPT, type_of(h2_layout), type_of(w_h_ffn), type_of(p_ffn)]
+    comptime g_down = matmul_skinny_v2[bf16, CPT, type_of(row_major[1, FFN]()), type_of(w_ffn_h), type_of(p_h)]
+    comptime g_head = matmul_skinny_v2[bf16, CPT, type_of(h2_layout), type_of(w_h_v), type_of(p_v)]
     comptime r_qf = skinny_reduce[type_of(p_qf), type_of(c_qf)]
     comptime r_h = skinny_reduce[type_of(p_h), type_of(c_h)]
     comptime r_kv = skinny_reduce[type_of(p_kv), type_of(c_kv)]
@@ -373,11 +375,11 @@ def main() raises:
                 var AoB1 = TileTensor(resb_d, h_layout)
                 var AoB2 = TileTensor(resb_d, h2_layout)
 
-                ctx.enqueue_function[g_qf](CurB2, Wq, Pqf, Int32(1), Int32(QF), Int32(H), grid_dim=(ceildiv(QF, SBN), SPLITK), block_dim=SK_THREADS)
+                ctx.enqueue_function[g_qf](CurB2, Wq, Pqf, Int32(1), Int32(QF), Int32(H), grid_dim=(ceildiv(QF, SBN2), SPLITK), block_dim=SK_THREADS)
                 ctx.enqueue_function[r_qf](Pqf, Qf2, Int32(1), Int32(QF), grid_dim=ceildiv(QF, 256), block_dim=256)
-                ctx.enqueue_function[g_kv](CurB2, Wk, Pkv, Int32(1), Int32(KV), Int32(H), grid_dim=(ceildiv(KV, SBN), SPLITK), block_dim=SK_THREADS)
+                ctx.enqueue_function[g_kv](CurB2, Wk, Pkv, Int32(1), Int32(KV), Int32(H), grid_dim=(ceildiv(KV, SBN2), SPLITK), block_dim=SK_THREADS)
                 ctx.enqueue_function[r_kv](Pkv, K2c, Int32(1), Int32(KV), grid_dim=ceildiv(KV, 256), block_dim=256)
-                ctx.enqueue_function[g_kv](CurB2, Wv, Pkv, Int32(1), Int32(KV), Int32(H), grid_dim=(ceildiv(KV, SBN), SPLITK), block_dim=SK_THREADS)
+                ctx.enqueue_function[g_kv](CurB2, Wv, Pkv, Int32(1), Int32(KV), Int32(H), grid_dim=(ceildiv(KV, SBN2), SPLITK), block_dim=SK_THREADS)
                 ctx.enqueue_function[r_kv](Pkv, V2c, Int32(1), Int32(KV), grid_dim=ceildiv(KV, 256), block_dim=256)
                 ctx.enqueue_function[split_k](Qf1, Q, Gate1, grid_dim=NQH, block_dim=HD)
                 ctx.enqueue_function[hrms_q](Q, Qn, Float32(1e-6), grid_dim=NQH, block_dim=HD)
@@ -388,7 +390,7 @@ def main() raises:
                 ctx.enqueue_function[append_k](Vc, Vhd, Int32(pos), grid_dim=NKVH, block_dim=HD)
                 ctx.enqueue_function[att_k](Q, Kc, Vc, Ao, Int32(pos + 1), Float32(0.0625), grid_dim=NQH, block_dim=HD)
                 ctx.enqueue_function[gmul_k](Ao1, Gate1, AoB1, Int32(H), grid_dim=ceildiv(H, 256), block_dim=256)
-                ctx.enqueue_function[g_h](AoB2, Wo, Ph, Int32(1), Int32(H), Int32(H), grid_dim=(ceildiv(H, SBN), SPLITK), block_dim=SK_THREADS)
+                ctx.enqueue_function[g_h](AoB2, Wo, Ph, Int32(1), Int32(H), Int32(H), grid_dim=(ceildiv(H, SBN2), SPLITK), block_dim=SK_THREADS)
                 ctx.enqueue_function[r_add](Ph, X1, Int32(1), Int32(H), grid_dim=ceildiv(H, 256), block_dim=256)
                 att_i += 1
                 w += 7
@@ -437,9 +439,9 @@ def main() raises:
                 var ResB1 = TileTensor(resb_d, h_layout)
                 var ResB2 = TileTensor(resb_d, h2_layout)
 
-                ctx.enqueue_function[g_qf](CurB2, Wqkv, Pq, Int32(1), Int32(CONV), Int32(H), grid_dim=(ceildiv(CONV, SBN), SPLITK), block_dim=SK_THREADS)
+                ctx.enqueue_function[g_qf](CurB2, Wqkv, Pq, Int32(1), Int32(CONV), Int32(H), grid_dim=(ceildiv(CONV, SBN2), SPLITK), block_dim=SK_THREADS)
                 ctx.enqueue_function[r_qf](Pq, Qkv2, Int32(1), Int32(CONV), grid_dim=ceildiv(CONV, 256), block_dim=256)
-                ctx.enqueue_function[g_h](CurB2, Wz, Ph, Int32(1), Int32(H), Int32(H), grid_dim=(ceildiv(H, SBN), SPLITK), block_dim=SK_THREADS)
+                ctx.enqueue_function[g_h](CurB2, Wz, Ph, Int32(1), Int32(H), Int32(H), grid_dim=(ceildiv(H, SBN2), SPLITK), block_dim=SK_THREADS)
                 ctx.enqueue_function[r_h](Ph, Z2, Int32(1), Int32(H), grid_dim=ceildiv(H, 256), block_dim=256)
                 ctx.enqueue_function[g_32](CurB2, Wa, Pab, Int32(1), Int32(NH_V), Int32(H), grid_dim=(1, SPLITK), block_dim=SK_THREADS)
                 ctx.enqueue_function[g_32](CurB2, Wb, Pab2, Int32(1), Int32(NH_V), Int32(H), grid_dim=(1, SPLITK), block_dim=SK_THREADS)
@@ -448,7 +450,7 @@ def main() raises:
                 ctx.enqueue_function[l2_k](Conv, grid_dim=NH_V, block_dim=SSTATE)
                 ctx.enqueue_function[delta_k](S0, S0_w, Conv, Eg, Beta, So, grid_dim=NH_V, block_dim=SSTATE)
                 ctx.enqueue_function[gated_k](So, Z1, Nw, ResB1, grid_dim=NH_V, block_dim=SSTATE)
-                ctx.enqueue_function[g_h](ResB2, Wsout, Ph, Int32(1), Int32(H), Int32(H), grid_dim=(ceildiv(H, SBN), SPLITK), block_dim=SK_THREADS)
+                ctx.enqueue_function[g_h](ResB2, Wsout, Ph, Int32(1), Int32(H), Int32(H), grid_dim=(ceildiv(H, SBN2), SPLITK), block_dim=SK_THREADS)
                 ctx.enqueue_function[r_add](Ph, X1, Int32(1), Int32(H), grid_dim=ceildiv(H, 256), block_dim=256)
                 ssm_i += 1
                 w += 10
@@ -465,10 +467,10 @@ def main() raises:
             var Pu = TileTensor(p_ffn2_d, p_ffn)
             var Ph2 = TileTensor(p_h_d, p_h)
             var FgB2 = TileTensor(fgb_d, row_major[1, FFN]())
-            ctx.enqueue_function[g_ffn](CurB2, Wfg, Pg, Int32(1), Int32(FFN), Int32(H), grid_dim=(ceildiv(FFN, SBN), SPLITK), block_dim=SK_THREADS)
-            ctx.enqueue_function[g_ffn](CurB2, Wfu, Pu, Int32(1), Int32(FFN), Int32(H), grid_dim=(ceildiv(FFN, SBN), SPLITK), block_dim=SK_THREADS)
+            ctx.enqueue_function[g_ffn](CurB2, Wfg, Pg, Int32(1), Int32(FFN), Int32(H), grid_dim=(ceildiv(FFN, SBN2), SPLITK), block_dim=SK_THREADS)
+            ctx.enqueue_function[g_ffn](CurB2, Wfu, Pu, Int32(1), Int32(FFN), Int32(H), grid_dim=(ceildiv(FFN, SBN2), SPLITK), block_dim=SK_THREADS)
             ctx.enqueue_function[r_swiglu](Pg, Pu, FgB2, Int32(1), Int32(FFN), grid_dim=ceildiv(FFN, 256), block_dim=256)
-            ctx.enqueue_function[g_down](FgB2, Wfd, Ph2, Int32(1), Int32(H), Int32(FFN), grid_dim=(ceildiv(H, SBN), SPLITK), block_dim=SK_THREADS)
+            ctx.enqueue_function[g_down](FgB2, Wfd, Ph2, Int32(1), Int32(H), Int32(FFN), grid_dim=(ceildiv(H, SBN2), SPLITK), block_dim=SK_THREADS)
             ctx.enqueue_function[r_add](Ph2, X1, Int32(1), Int32(H), grid_dim=ceildiv(H, 256), block_dim=256)
             w += 4
 
@@ -486,7 +488,7 @@ def main() raises:
                 Int32(H), Float32(1e-6), grid_dim=1, block_dim=256,
             )
             var Whead = tens_bf16(ctx, wbuf, off[w + 1], H * VOCAB, w_h_v)
-            ctx.enqueue_function[g_head](CurB2, Whead, Pv, Int32(1), Int32(VOCAB), Int32(H), grid_dim=(ceildiv(VOCAB, SBN), SPLITK), block_dim=SK_THREADS)
+            ctx.enqueue_function[g_head](CurB2, Whead, Pv, Int32(1), Int32(VOCAB), Int32(H), grid_dim=(ceildiv(VOCAB, SBN2), SPLITK), block_dim=SK_THREADS)
             ctx.enqueue_function[r_head](Pv, Logits2, Int32(1), Int32(VOCAB), grid_dim=ceildiv(VOCAB, 256), block_dim=256)
             ctx.enqueue_function[argmax_k](Logits2, Toks, Int32(VOCAB), Int32(pos + 1), grid_dim=1, block_dim=256)
 
