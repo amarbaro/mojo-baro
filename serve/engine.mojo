@@ -803,6 +803,14 @@ def main() raises:
         dst_buf=draft_logits_h,
         src_buf=DeviceBuffer[f32](ctx, logits_d.unsafe_ptr(), VOCAB, owning=False),
     )
+    # h_nextn is dumped too: tools/draft-ref.py's numpy reference needs the
+    # EXACT f32 hidden state the GPU consumed, or a mismatch says nothing about
+    # correctness -- it would just mean the two sides were fed different inputs.
+    var hn_h = ctx.enqueue_create_host_buffer[f32](H)
+    ctx.enqueue_copy(
+        dst_buf=hn_h,
+        src_buf=DeviceBuffer[f32](ctx, hn_d.unsafe_ptr(), H, owning=False),
+    )
     var dtok_h = ctx.enqueue_create_host_buffer[DType.int32](1)
     ctx.enqueue_copy(
         dst_buf=dtok_h,
@@ -814,5 +822,10 @@ def main() raises:
         var dp = draft_logits_h.unsafe_ptr().unsafe_bitcast[UInt8]()
         var dspan = Span[UInt8](unsafe_ptr=dp, length=VOCAB * 4)
         df.write_bytes(dspan)
+
+    with open(".work/draft-hn.bin", "w") as hf:
+        var hp = hn_h.unsafe_ptr().unsafe_bitcast[UInt8]()
+        var hspan = Span[UInt8](unsafe_ptr=hp, length=H * 4)
+        hf.write_bytes(hspan)
 
     print("DRAFT: from_token", last_tok, "draft_argmax", Int(dtok_h[0]))
