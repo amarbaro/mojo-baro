@@ -120,3 +120,27 @@ wide-load mechanism held; the occupancy-collapse prediction for 64
 accumulator lanes did not (32 more f32 regs is affordable here).
 Adoption rule met (1.40x >= 1.10x floor) -> engine moves to CPT=8,
 token gate must stay 16/16.
+
+## v4 — M=1 specialization (frozen before first run)
+
+Question: engine decode is M=1 but v2 carries SM=8 machinery (8-row
+LDS staging, 64 accumulator lanes at CPT=8). Does an M=1-specialized
+kernel (scalar-A staging, SIMD[CPT] accumulator) buy the remaining
+gap to the vendor (139 -> 126 us at M=8; M=1 unmeasured cold)?
+
+Instrument: bench_coldcache_m1.mojo — same 8-buffer rotation, 1 s
+warm, 200 timed, 10 repeats, but M=1, K=4096, N=12288. Arms:
+v2 CPT=8 at M=1 (engine's current kernel = baseline), m1 CPT=8,
+m1 CPT=4, hipblaslt f16 at M=1.
+
+Frozen predictions:
+1. Spread per arm < 1.5% of mean, else no claim.
+2. v2c8 at M=1 lands 135–145 us (B traffic dominates; wasted A rows
+   cost little).
+3. m1c8 beats v2c8 by 3–12% (117–135 us) via register/LDS pressure
+   relief -> more resident waves; NOT via bytes (traffic identical).
+4. Falsifier: m1c8 within 3% of v2c8 -> the kernel is latency/traffic
+   -bound, not occupancy-bound; stop chasing GEMM at bf16 and move to
+   MTP/q8 (steps 4–8 of the plan).
+Claim rule: engine adoption only if m1 beats v2 by >= 5% at M=1 AND
+the 64-token gate passes bit-identically.
