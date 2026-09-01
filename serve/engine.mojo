@@ -16,7 +16,7 @@ from layout import TileTensor, TensorLayout, row_major
 
 from elementwise import rmsnorm_cast, embed_lookup_pos, argmax_pos
 from matmul_skinny import (
-    matmul_skinny_v2, skinny_reduce, skinny_reduce_add, skinny_reduce_swiglu_bf16,
+    matmul_skinny_m1, skinny_reduce, skinny_reduce_add, skinny_reduce_swiglu_bf16,
     SM, SBN, SPLITK, SK_THREADS,
 )
 from ssm import (
@@ -37,7 +37,7 @@ comptime N_LAYERS = 32
 comptime N_SSM = 24
 comptime N_ATT = 8
 comptime TMAX = 128
-comptime GEN_N = 16
+comptime GEN_N = 64
 
 comptime bf16 = DType.bfloat16
 comptime f32 = DType.float32
@@ -269,13 +269,13 @@ def main() raises:
     comptime embed_k = embed_lookup_pos[type_of(emb_layout), type_of(h2_layout), type_of(toks_layout)]
     comptime argmax_k = argmax_pos[type_of(vrow_layout), type_of(toks_layout)]
 
-    comptime g_qf = matmul_skinny_v2[bf16, CPT, type_of(h2_layout), type_of(w_h_qf), type_of(p_qf)]
-    comptime g_h = matmul_skinny_v2[bf16, CPT, type_of(h2_layout), type_of(w_h_h), type_of(p_h)]
-    comptime g_kv = matmul_skinny_v2[bf16, CPT, type_of(h2_layout), type_of(w_h_kv), type_of(p_kv)]
-    comptime g_32 = matmul_skinny_v2[bf16, CPT, type_of(h2_layout), type_of(w_h_32), type_of(p_32)]
-    comptime g_ffn = matmul_skinny_v2[bf16, CPT, type_of(h2_layout), type_of(w_h_ffn), type_of(p_ffn)]
-    comptime g_down = matmul_skinny_v2[bf16, CPT, type_of(row_major[1, FFN]()), type_of(w_ffn_h), type_of(p_h)]
-    comptime g_head = matmul_skinny_v2[bf16, CPT, type_of(h2_layout), type_of(w_h_v), type_of(p_v)]
+    comptime g_qf = matmul_skinny_m1[bf16, CPT, type_of(h2_layout), type_of(w_h_qf), type_of(p_qf)]
+    comptime g_h = matmul_skinny_m1[bf16, CPT, type_of(h2_layout), type_of(w_h_h), type_of(p_h)]
+    comptime g_kv = matmul_skinny_m1[bf16, CPT, type_of(h2_layout), type_of(w_h_kv), type_of(p_kv)]
+    comptime g_32 = matmul_skinny_m1[bf16, CPT, type_of(h2_layout), type_of(w_h_32), type_of(p_32)]
+    comptime g_ffn = matmul_skinny_m1[bf16, CPT, type_of(h2_layout), type_of(w_h_ffn), type_of(p_ffn)]
+    comptime g_down = matmul_skinny_m1[bf16, CPT, type_of(row_major[1, FFN]()), type_of(w_ffn_h), type_of(p_h)]
+    comptime g_head = matmul_skinny_m1[bf16, CPT, type_of(h2_layout), type_of(w_h_v), type_of(p_v)]
     comptime r_qf = skinny_reduce[type_of(p_qf), type_of(c_qf)]
     comptime r_h = skinny_reduce[type_of(p_h), type_of(c_h)]
     comptime r_kv = skinny_reduce[type_of(p_kv), type_of(c_kv)]
