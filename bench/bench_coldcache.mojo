@@ -17,7 +17,7 @@ from layout import TileTensor, row_major
 
 from baro import Baro
 from matmul_skinny import (
-    matmul_skinny, matmul_skinny_wt, matmul_skinny_q8, matmul_skinny_q8b,
+    matmul_skinny, matmul_skinny_q8b,
     SM, SBN, SPLITK, SK_THREADS, Q8_BLOCK,
 )
 
@@ -29,11 +29,9 @@ comptime ITERS = 200
 comptime REPEATS = 10
 
 comptime a_layout = row_major[M, K]()
-comptime w_layout = row_major[N, K]()
 comptime b_layout = row_major[K, N]()
 comptime qt_layout = row_major[K, N]()
 comptime st_layout = row_major[K // Q8_BLOCK, N]()
-comptime s_layout = row_major[N, K // Q8_BLOCK]()
 comptime p_layout = row_major[SPLITK, SM, N]()
 
 comptime bf16 = DType.bfloat16
@@ -58,10 +56,8 @@ def main() raises:
     comptime base = ".work/gguf/blk_0_ffn_gate_weight"
 
     var a_host = ctx.enqueue_create_host_buffer[bf16](M * K)
-    var s_host = ctx.enqueue_create_host_buffer[f32](N * K // Q8_BLOCK)
     ctx.synchronize()
     load_into(base + ".a.bin", a_host.unsafe_ptr().unsafe_bitcast[UInt8](), M * K * 2)
-    load_into(base + ".scales.bin", s_host.unsafe_ptr().unsafe_bitcast[UInt8](), N * K // Q8_BLOCK * 4)
 
     var t_host = ctx.enqueue_create_host_buffer[bf16](N * K)
     var qt_host = ctx.enqueue_create_host_buffer[DType.int8](N * K)
@@ -84,7 +80,6 @@ def main() raises:
     var qt_dev = ctx.enqueue_create_buffer[DType.int8](NBUF * N * K)
     var st_dev = ctx.enqueue_create_buffer[f32](NBUF * N * K // Q8_BLOCK)
     var h16_dev = ctx.enqueue_create_buffer[DType.float16](NBUF * N * K)
-    var s_dev = ctx.enqueue_create_buffer[f32](NBUF * N * K // Q8_BLOCK)
     var p_dev = ctx.enqueue_create_buffer[f32](SPLITK * SM * N)
     ctx.enqueue_copy(dst_buf=a_dev, src_buf=a_host)
     ctx.enqueue_copy(dst_buf=a16_dev, src_buf=a16_host)
@@ -93,12 +88,6 @@ def main() raises:
     var A = TileTensor(a_dev, a_layout)
     var Cp = TileTensor(p_dev, p_layout)
 
-    comptime skinny_wt = matmul_skinny_wt[
-        bf16, type_of(a_layout), type_of(w_layout), type_of(p_layout)
-    ]
-    comptime skinny_q8 = matmul_skinny_q8[
-        type_of(a_layout), type_of(w_layout), type_of(s_layout), type_of(p_layout)
-    ]
     comptime SGRID = (ceildiv(N, SBN), SPLITK)
     comptime FLOPS = 2.0 * Float64(M) * Float64(N) * Float64(K)
 
@@ -112,7 +101,6 @@ def main() raises:
     var qtp = qt_dev.unsafe_ptr()
     var stp = st_dev.unsafe_ptr()
     var hp = h16_dev.unsafe_ptr()
-    var sp = s_dev.unsafe_ptr()
     for b in range(NBUF):
         var tb = DeviceBuffer[bf16](ctx, tp + b * N * K, N * K, owning=False)
         var qtb = DeviceBuffer[DType.int8](ctx, qtp + b * N * K, N * K, owning=False)

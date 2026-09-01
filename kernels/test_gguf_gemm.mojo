@@ -16,14 +16,14 @@ from std.sys import has_accelerator
 from max.gpu.host import DeviceContext
 from layout import TileTensor, row_major
 
-from matmul_skinny import matmul_skinny_wt, skinny_reduce, SM, SBN, SPLITK, SK_THREADS
+from matmul_skinny import matmul_skinny, skinny_reduce, SM, SBN, SPLITK, SK_THREADS
 
 comptime M = 8
 comptime K = 4096
 comptime N = 12288
 
 comptime a_layout = row_major[M, K]()
-comptime w_layout = row_major[N, K]()
+comptime w_layout = row_major[K, N]()
 comptime c_layout = row_major[M, N]()
 comptime p_layout = row_major[SPLITK, SM, N]()
 
@@ -56,7 +56,7 @@ def main() raises:
         a_host.unsafe_ptr().unsafe_bitcast[UInt8](), M * K * 2,
     )
     load_into(
-        ".work/gguf/blk_0_ffn_up_weight.bin",
+        ".work/gguf/blk_0_ffn_up_weight.t.bin",
         w_host.unsafe_ptr().unsafe_bitcast[UInt8](), N * K * 2,
     )
     load_into(
@@ -77,7 +77,7 @@ def main() raises:
     var C = TileTensor(c_dev, c_layout)
     var Cp = TileTensor(p_dev, p_layout)
 
-    comptime skinny_wt = matmul_skinny_wt[
+    comptime skinny_wt = matmul_skinny[
         bf16, type_of(a_layout), type_of(w_layout), type_of(p_layout)
     ]
     comptime reduce = skinny_reduce[type_of(p_layout), type_of(c_layout)]
