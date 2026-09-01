@@ -65,3 +65,25 @@ WTILE_N=4 -- B-fragment reuse across four mma per LDS read was the lever.
 | 512^3 | 128x128x16 | 4x2 | 2x4 | 4x4 | 256 | 14293 | 10948 (-23%, 16 blocks; exceeds the 10% allowance, noted) |
 | 2048^3 | 128x128x16 | 4x2 | 2x4 | 16x16 | 256 | 39881 | 56593 (1.42x) |
 | 4096^3 | 128x128x16 | 4x2 | 2x4 | 32x32 | 256 | 42733 | 66197 (1.55x) |
+
+### Step 3 result: NOT landed (frozen >= 1.2x, measured <= 1.01x)
+
+Register-prefetch double buffering (fetch next tile into registers before
+computing the current one, single LDS buffer), on top of step 2. Draft kept at
+`.work/wmma_dbuf.mojo`, not in the tree.
+
+| variant | 2048^3 | 4096^3 |
+|---|---|---|
+| step 2 (no prefetch, BLK_K 16) | 56593 | 66197 |
+| prefetch, BLK_K 32 | 57189 | 59600 |
+| prefetch, BLK_K 16 | 52038 | 66924 |
+
+Diagnosis 4 was wrong: at 4 KB LDS and 256 threads enough blocks co-reside per
+CU that global latency is already hidden by occupancy; the extra registers cost
+more than the overlap earns. Re-confirms the file's earlier BLK_K finding.
+
+Remaining gap to aiter at 4096^3: 66.2k vs 88.9k (0.74x, was 0.30x). Next
+lever if pursued: B fragment LDS reads are 16 strided 2-byte loads; a
+swizzled/padded sb layout or transposed staging is the candidate, but the file
+records the transposed attempt costing 3% at the old config -- re-measure at
+this config before trusting that.

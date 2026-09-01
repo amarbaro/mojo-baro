@@ -5,7 +5,7 @@ is reproducible with the command given. If you are an agent picking up a kernel
 task, this is your starting point: **do not re-derive it, and do not trust a
 number that is not in this file or produced by `bench/run.py`.**
 
-Last verified: 2026-08-31.
+Last verified: 2026-09-01 (fp16 WMMA rows; see `bench/wmma-fp16-protocol.md`).
 
 ## Hardware and toolchain
 
@@ -171,20 +171,22 @@ comparable to this fp32 benchmark** — they use different hardware inside the
 same chip.
 
 **fp16 WMMA kernel — measured (`bench/bench_fp16.mojo`, `kernels/amar_matmul_wmma_lds.mojo`).**
-`WARPS 4x4 WTILE 2x1`, swept over 72 configs with `./bench/sweep.py wmma`:
+`WARPS 4x2 WTILE 2x4`, 16-byte vector staging, swept over 72 configs with `./bench/sweep.py wmma`:
 
 | size | ours | aiter tuned Triton |
 |---|---|---|
-| 512³ | **9285** | 6175 |
-| 1024³ | 21732 | 47485 |
-| 2048³ | 28758 | 82202 |
-| 4096³ | 27133 | 88897 |
+| 512³ | **10948** | 6175 |
+| 1024³ | (not re-measured) | 47485 |
+| 2048³ | 56593 | 82202 |
+| 4096³ | 66197 | 88897 |
 
-We lead at 512³ and trail by ~3x at 4096³. **`WTILE_N=1` is on every top-nine
-config** — a wave owning more than one 16-wide column strip halves throughput —
-but the winners use 512 threads and a 128x64 block tile. The rule here is *many
-resident waves each owning a thin column strip*, not small blocks. `BLK_K` must
-stay at 16: widening it to 64 puts 16 KB of LDS in a block and halves throughput.
+We lead at 512³ and trail by 1.34x at 4096³ (was 3.3x before 2026-09-01).
+**The 512³ sweep was the wrong instrument**: it concluded `WTILE_N=1` because
+at 512³ a 128x64 tile leaves 32 blocks on 96 CUs and latency wins. Swept at
+4096³, every top-nine config has **`WTILE_N=4`** (one B fragment feeds four
+mma). Sweep at the size you ship. `BLK_K` stays at 16: 32 with register
+prefetch was flat at 2048³ and -10% at 4096³, 64 halves throughput.
+Step-by-step receipts: `bench/wmma-fp16-protocol.md`.
 
 **fp16 WMMA in Mojo works, and the fragment shape is the trap.** RDNA3 wave32
 wants **a/b = 16 wide, c/d = 8 wide** (matching
