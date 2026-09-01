@@ -65,3 +65,19 @@ New arms in the same instrument (8 rotating buffers, 10 repeats):
    vendor range. Disclosed asymmetry: q8-vs-f16 is a product-level
    comparison (different dtypes); the like-for-like lane is
    bf16-B vs hipblaslt_f16.
+
+## Result v2 2026-09-01 (10 repeats; rep-1 blay outlier 510us disclosed —
+## llama-server held 22 GB VRAM throughout; wt arms dropped for VRAM, disclosed)
+
+| arm | us/launch | prediction | verdict |
+|---|---|---|---|
+| bf16 B-layout | 195.0–195.9 | (v1 baseline) | reproduced |
+| q8b K-major | 164.5–165.3 | 105–145 | **MISSED high** (faster than bf16, less than modeled) |
+| q8b vs bf16-B | 1.18x | 1.45–1.85x | **MISSED low** |
+| hipblaslt f16 | 123.0–126.2 | 110–200 | held — **vendor wins**, 1.33x over q8b |
+
+Reading: vendor f16 achieves ~812 GB/s effective (85% of peak); our
+B-layout 517 GB/s (54%); q8b only 344 GB/s effective on its byte stream —
+dequant ALU + per-32 scale reload eats most of the byte win. Beating the
+vendor cold requires raising bandwidth efficiency (multi-column per
+thread, wider loads), not shrinking bytes further. No beat-vendor claim.
