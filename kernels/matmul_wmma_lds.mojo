@@ -25,6 +25,7 @@ Two things were tried here and are NOT worth retrying:
 from max.gpu.memory import AddressSpace
 from max.gpu.sync import barrier
 from std.gpu import block_idx, thread_idx
+from std.math import ceildiv
 from layout import TileTensor, TensorLayout, row_major, stack_allocation
 from layout.tensor_core import mma
 
@@ -61,7 +62,6 @@ def amar_matmul_wmma_lds[
     k_dim: Int32,
 ):
     comptime assert A.flat_rank == 2 and B.flat_rank == 2 and C.flat_rank == 2
-    comptime assert A_LOADERS + B_LOADERS <= NTHREADS
 
     var M = Int(m)
     var N = Int(n)
@@ -96,33 +96,36 @@ def amar_matmul_wmma_lds[
 
     var kt = 0
     while kt < K:
-        if tid < A_LOADERS:
-            var r = tid // (BLK_K // VEC)
-            var c = (tid % (BLK_K // VEC)) * VEC
-            var gr = block_row + r
-            var gc = kt + c
-            if gr < M and gc + VEC <= K:
-                sav[r, c // VEC] = rebind[sav.ElementType](Av[gr, gc // VEC])
-            else:
-                comptime for i in range(VEC):
-                    sa[r, c + i] = rebind[sa.ElementType](
-                        A[gr, gc + i] if gr < M and gc + i < K
-                        else Scalar[DType.float16](0)
-                    )
-        elif tid < A_LOADERS + B_LOADERS:
-            var e = tid - A_LOADERS
-            var r = e // (BLK_N // VEC)
-            var c = (e % (BLK_N // VEC)) * VEC
-            var gr = kt + r
-            var gc = block_col + c
-            if gr < K and gc + VEC <= N:
-                sbv[r, c // VEC] = rebind[sbv.ElementType](Bv[gr, gc // VEC])
-            else:
-                comptime for i in range(VEC):
-                    sb[r, c + i] = rebind[sb.ElementType](
-                        B[gr, gc + i] if gr < K and gc + i < N
-                        else Scalar[DType.float16](0)
-                    )
+        comptime for s in range(ceildiv(A_LOADERS, NTHREADS)):
+            var v = tid + s * NTHREADS
+            if v < A_LOADERS:
+                var r = v // (BLK_K // VEC)
+                var c = (v % (BLK_K // VEC)) * VEC
+                var gr = block_row + r
+                var gc = kt + c
+                if gr < M and gc + VEC <= K:
+                    sav[r, c // VEC] = rebind[sav.ElementType](Av[gr, gc // VEC])
+                else:
+                    comptime for i in range(VEC):
+                        sa[r, c + i] = rebind[sa.ElementType](
+                            A[gr, gc + i] if gr < M and gc + i < K
+                            else Scalar[DType.float16](0)
+                        )
+        comptime for s in range(ceildiv(B_LOADERS, NTHREADS)):
+            var v = (tid + NTHREADS - A_LOADERS % NTHREADS) % NTHREADS + s * NTHREADS
+            if v < B_LOADERS:
+                var r = v // (BLK_N // VEC)
+                var c = (v % (BLK_N // VEC)) * VEC
+                var gr = kt + r
+                var gc = block_col + c
+                if gr < K and gc + VEC <= N:
+                    sbv[r, c // VEC] = rebind[sbv.ElementType](Bv[gr, gc // VEC])
+                else:
+                    comptime for i in range(VEC):
+                        sb[r, c + i] = rebind[sb.ElementType](
+                            B[gr, gc + i] if gr < K and gc + i < N
+                            else Scalar[DType.float16](0)
+                        )
         barrier()
 
         # One LDS stage now feeds BLK_K/WMMA_K matrix-core steps, so the two

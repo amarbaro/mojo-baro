@@ -30,7 +30,7 @@ TARGETS = {
         out=ROOT / "bench" / "sweep.jsonl",
     ),
     "wmma": dict(
-        src=ROOT / "kernels" / "amar_matmul_wmma_lds.mojo",
+        src=ROOT / "kernels" / "matmul_wmma_lds.mojo",
         bench="bench/bench_fp16.mojo",
         variant="wmma_lds_fp16",
         out=ROOT / "bench" / "sweep-wmma.jsonl",
@@ -97,11 +97,18 @@ def measure(T):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("target", nargs="?", default="regtile", choices=sorted(TARGETS))
+    ap.add_argument("--size", type=int, default=None,
+                    help="patch the bench's comptime M/N/K to this cube before building")
     args = ap.parse_args()
     T = TARGETS[args.target]
     SRC, OUT = T["src"], T["out"]
 
     original = SRC.read_text()
+    BENCH = ROOT / T["bench"]
+    bench_original = BENCH.read_text()
+    if args.size:
+        BENCH.write_text(re.sub(r"^comptime ([MNK]) = \d+$", rf"comptime \1 = {args.size}",
+                                bench_original, flags=re.M))
     if args.target == "wmma":
         combos = list(wmma_combos())
         label = lambda c: (f"WARPS {c['WARPS_M']}x{c['WARPS_N']} "
@@ -133,7 +140,8 @@ def main():
                 patch(SRC, **cfg)
                 gflops, status = measure(T)
                 rec = dict(cfg)
-                rec.update(gflops=gflops, status=status, target=args.target)
+                rec.update(gflops=gflops, status=status, target=args.target,
+                           size=args.size)
                 fh.write(json.dumps(rec) + "\n")
                 fh.flush()
                 if gflops:
@@ -142,6 +150,7 @@ def main():
                 print(f"[{i}/{len(combos)}] {label(cfg)} -> {shown}", flush=True)
     finally:
         SRC.write_text(original)
+        BENCH.write_text(bench_original)
 
     results.sort(key=lambda r: -r["gflops"])
     print("\ntop 10:")
