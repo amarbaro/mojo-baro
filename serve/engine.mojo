@@ -15,17 +15,19 @@ from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, TensorLayout, row_major
 
-from elementwise import rmsnorm_cast, embed_lookup_pos, argmax_pos
+from elementwise import (
+    amar_rmsnorm, amar_rmsnorm_cast, amar_embed_lookup_pos, amar_argmax_pos, amar_tok_copy,
+)
 from matmul_skinny import (
-    matmul_skinny_m1, matmul_skinny_v2, skinny_reduce, skinny_reduce_add,
-    skinny_reduce_swiglu_bf16, SM, SBN, SPLITK, SK_THREADS,
+    amar_matmul_skinny_m1, amar_matmul_skinny_v2, amar_skinny_reduce, amar_skinny_reduce_add,
+    amar_skinny_reduce_swiglu_bf16, SM, SBN, SPLITK, SK_THREADS,
 )
 from ssm import (
-    ssm_reduce_gates, ssm_conv, ssm_qk_l2norm,
-    ssm_delta_step, ssm_gated_out_bf16, CONV, NH_V, SSTATE,
+    amar_ssm_reduce_gates, amar_ssm_conv, amar_ssm_qk_l2norm,
+    amar_ssm_delta_step, amar_ssm_gated_out_bf16, amar_cast_bf16, CONV, NH_V, SSTATE,
 )
 from attn import (
-    head_rmsnorm, attn_decode, gate_mul_cast, qgate_split, rope_yarn, kv_append,
+    amar_head_rmsnorm, amar_attn_decode, amar_gate_mul_cast, amar_qgate_split, amar_rope_yarn, amar_kv_append,
     HD, NQH, NKVH,
 )
 
@@ -44,6 +46,11 @@ comptime bf16 = DType.bfloat16
 comptime f32 = DType.float32
 
 comptime MROWS = SM
+comptime KMAX = SM
+comptime SLOTS = KMAX + 1
+comptime CONV_SLOT = N_SSM * 3 * CONV
+comptime SSM_SLOT = N_SSM * NH_V * SSTATE * SSTATE
+comptime ATT32 = NKVH * TMAX * HD
 
 comptime h_layout = row_major[H]()
 comptime h2_layout = row_major[1, H]()
@@ -73,6 +80,7 @@ comptime n128_layout = row_major[SSTATE]()
 comptime emb_layout = row_major[VOCAB, H]()
 comptime vrow_layout = row_major[1, VOCAB]()
 comptime toks_layout = row_major[TMAX]()
+comptime dtok_layout = row_major[KMAX + 1]()
 
 comptime w_h_qf = row_major[H, QF]()
 comptime w_h_h = row_major[H, H]()
@@ -81,6 +89,7 @@ comptime w_h_32 = row_major[H, NH_V]()
 comptime w_h_ffn = row_major[H, FFN]()
 comptime w_ffn_h = row_major[FFN, H]()
 comptime w_h_v = row_major[H, VOCAB]()
+comptime w_qf_h = row_major[QF, H]()
 
 comptime p_qf = row_major[SPLITK, SM, QF]()
 comptime p_h = row_major[SPLITK, SM, H]()
@@ -205,6 +214,22 @@ def main() raises:
         push(off, cursor, FFN * H * B2)
     push(off, cursor, H * B4)
     push(off, cursor, H * VOCAB * B2)
+    push(off, cursor, H * B4)
+    push(off, cursor, H * QF * B2)
+    push(off, cursor, H * KV * B2)
+    push(off, cursor, H * KV * B2)
+    push(off, cursor, HD * B4)
+    push(off, cursor, HD * B4)
+    push(off, cursor, H * H * B2)
+    push(off, cursor, H * B4)
+    push(off, cursor, H * FFN * B2)
+    push(off, cursor, H * FFN * B2)
+    push(off, cursor, FFN * H * B2)
+    push(off, cursor, QF * H * B2)
+    push(off, cursor, H * B4)
+    push(off, cursor, H * B4)
+    push(off, cursor, H * B4)
+    var e = len(off) - 15
     var total = cursor
 
     # --- load pack into one device buffer -----------------------------------
@@ -257,6 +282,29 @@ def main() raises:
             prompt.append(val)
     print("prompt tokens:", len(prompt))
 
+    var kcfg = 4
+    try:
+        with open(".work/engine-pack/spec-k.txt", "r") as f:
+            var kd = f.read_bytes()
+            var kv_ = 0
+            var kh = False
+            for i in range(len(kd)):
+                var b = Int(kd[i])
+                if b >= 48 and b <= 57:
+                    kv_ = kv_ * 10 + (b - 48)
+                    kh = True
+                elif kh:
+                    break
+            if kh:
+                kcfg = kv_
+    except:
+        kcfg = 4
+    if kcfg < 1:
+        kcfg = 1
+    if kcfg > KMAX:
+        kcfg = KMAX
+    print("spec k:", kcfg)
+
     # --- activations / state -------------------------------------------------
     var x_d = ctx.enqueue_create_buffer[f32](MROWS * H)
     var curb_d = ctx.enqueue_create_buffer[bf16](MROWS * H)
@@ -276,6 +324,11 @@ def main() raises:
     var fgb_d = ctx.enqueue_create_buffer[bf16](MROWS * FFN)
     var logits_d = ctx.enqueue_create_buffer[f32](MROWS * VOCAB)
     var toks_d = ctx.enqueue_create_buffer[DType.int32](TMAX)
+    var hn_d = ctx.enqueue_create_buffer[f32](MROWS * H)
+    var de_d = ctx.enqueue_create_buffer[f32](H)
+    var mh_d = ctx.enqueue_create_buffer[f32](H)
+    var cc_d = ctx.enqueue_create_buffer[bf16](MROWS * QF)
+    var dtok_d = ctx.enqueue_create_buffer[DType.int32](KMAX + 1)
 
     var p_qf_d = ctx.enqueue_create_buffer[f32](SPLITK * SM * QF)
     var p_h_d = ctx.enqueue_create_buffer[f32](SPLITK * SM * H)
@@ -286,65 +339,79 @@ def main() raises:
     var p_ffn2_d = ctx.enqueue_create_buffer[f32](SPLITK * SM * FFN)
     var p_v_d = ctx.enqueue_create_buffer[f32](SPLITK * SM * VOCAB)
 
-    var convstate_d = ctx.enqueue_create_buffer[f32](N_SSM * 3 * CONV)
-    var sstate_d = ctx.enqueue_create_buffer[f32](N_SSM * NH_V * SSTATE * SSTATE)
-    var kc_d = ctx.enqueue_create_buffer[f32](N_ATT * NKVH * TMAX * HD)
-    var vc_d = ctx.enqueue_create_buffer[f32](N_ATT * NKVH * TMAX * HD)
+    var convstate_d = ctx.enqueue_create_buffer[f32](SLOTS * CONV_SLOT)
+    var sstate_d = ctx.enqueue_create_buffer[f32](SLOTS * SSM_SLOT)
+    var kc_d = ctx.enqueue_create_buffer[f32](N_ATT * ATT32)
+    var vc_d = ctx.enqueue_create_buffer[f32](N_ATT * ATT32)
+    var kc32_d = ctx.enqueue_create_buffer[f32](ATT32)
+    var vc32_d = ctx.enqueue_create_buffer[f32](ATT32)
     ctx.enqueue_memset(convstate_d, 0)
     ctx.enqueue_memset(sstate_d, 0)
     ctx.enqueue_memset(kc_d, 0)
     ctx.enqueue_memset(vc_d, 0)
+    ctx.enqueue_memset(kc32_d, 0)
+    ctx.enqueue_memset(vc32_d, 0)
     ctx.synchronize()
 
     # --- kernel bindings -----------------------------------------------------
-    comptime rmsc_k = rmsnorm_cast[type_of(xm_layout), type_of(h_layout), type_of(xm_layout)]
-    comptime embed_k = embed_lookup_pos[type_of(emb_layout), type_of(xm_layout), type_of(toks_layout)]
-    comptime argmax_k = argmax_pos[type_of(vm_layout), type_of(toks_layout)]
+    comptime rmsc_k = amar_rmsnorm_cast[type_of(xm_layout), type_of(h_layout), type_of(xm_layout)]
+    comptime embed_k = amar_embed_lookup_pos[type_of(emb_layout), type_of(xm_layout), type_of(toks_layout)]
+    comptime argmax_k = amar_argmax_pos[type_of(vm_layout), type_of(toks_layout)]
+    comptime argmax_d = amar_argmax_pos[type_of(vm_layout), type_of(dtok_layout)]
+    comptime embed1_k = amar_embed_lookup_pos[type_of(emb_layout), type_of(h2_layout), type_of(dtok_layout)]
+    comptime rms_m = amar_rmsnorm[type_of(xm_layout), type_of(h_layout), type_of(xm_layout)]
+    comptime rms_h2 = amar_rmsnorm[type_of(h2_layout), type_of(h_layout), type_of(h2_layout)]
+    comptime rmsc_h2 = amar_rmsnorm_cast[type_of(h2_layout), type_of(h_layout), type_of(h2_layout)]
+    comptime cast_m = amar_cast_bf16[type_of(xflat_layout), type_of(xflat_layout)]
+    comptime cast_1 = amar_cast_bf16[type_of(h_layout), type_of(h_layout)]
+    comptime tokcp_k = amar_tok_copy[type_of(dtok_layout), type_of(toks_layout)]
+    comptime tokcp_b = amar_tok_copy[type_of(toks_layout), type_of(dtok_layout)]
+    comptime g_eh_1 = amar_matmul_skinny_m1[bf16, CPT, type_of(qfm_layout), type_of(w_qf_h), type_of(p_h)]
 
-    comptime g_qf_1 = matmul_skinny_m1[bf16, CPT, type_of(xm_layout), type_of(w_h_qf), type_of(p_qf)]
-    comptime g_h_1 = matmul_skinny_m1[bf16, CPT, type_of(xm_layout), type_of(w_h_h), type_of(p_h)]
-    comptime g_kv_1 = matmul_skinny_m1[bf16, CPT, type_of(xm_layout), type_of(w_h_kv), type_of(p_kv)]
-    comptime g_32_1 = matmul_skinny_m1[bf16, CPT, type_of(xm_layout), type_of(w_h_32), type_of(p_32)]
-    comptime g_ffn_1 = matmul_skinny_m1[bf16, CPT, type_of(xm_layout), type_of(w_h_ffn), type_of(p_ffn)]
-    comptime g_down_1 = matmul_skinny_m1[bf16, CPT, type_of(ffnm_layout), type_of(w_ffn_h), type_of(p_h)]
-    comptime g_head_1 = matmul_skinny_m1[bf16, CPT, type_of(xm_layout), type_of(w_h_v), type_of(p_v)]
+    comptime g_qf_1 = amar_matmul_skinny_m1[bf16, CPT, type_of(xm_layout), type_of(w_h_qf), type_of(p_qf)]
+    comptime g_h_1 = amar_matmul_skinny_m1[bf16, CPT, type_of(xm_layout), type_of(w_h_h), type_of(p_h)]
+    comptime g_kv_1 = amar_matmul_skinny_m1[bf16, CPT, type_of(xm_layout), type_of(w_h_kv), type_of(p_kv)]
+    comptime g_32_1 = amar_matmul_skinny_m1[bf16, CPT, type_of(xm_layout), type_of(w_h_32), type_of(p_32)]
+    comptime g_ffn_1 = amar_matmul_skinny_m1[bf16, CPT, type_of(xm_layout), type_of(w_h_ffn), type_of(p_ffn)]
+    comptime g_down_1 = amar_matmul_skinny_m1[bf16, CPT, type_of(ffnm_layout), type_of(w_ffn_h), type_of(p_h)]
+    comptime g_head_1 = amar_matmul_skinny_m1[bf16, CPT, type_of(xm_layout), type_of(w_h_v), type_of(p_v)]
 
-    comptime g_qf_v = matmul_skinny_v2[bf16, CPT, type_of(xm_layout), type_of(w_h_qf), type_of(p_qf)]
-    comptime g_h_v = matmul_skinny_v2[bf16, CPT, type_of(xm_layout), type_of(w_h_h), type_of(p_h)]
-    comptime g_kv_v = matmul_skinny_v2[bf16, CPT, type_of(xm_layout), type_of(w_h_kv), type_of(p_kv)]
-    comptime g_32_v = matmul_skinny_v2[bf16, CPT, type_of(xm_layout), type_of(w_h_32), type_of(p_32)]
-    comptime g_ffn_v = matmul_skinny_v2[bf16, CPT, type_of(xm_layout), type_of(w_h_ffn), type_of(p_ffn)]
-    comptime g_down_v = matmul_skinny_v2[bf16, CPT, type_of(ffnm_layout), type_of(w_ffn_h), type_of(p_h)]
-    comptime g_head_v = matmul_skinny_v2[bf16, CPT, type_of(xm_layout), type_of(w_h_v), type_of(p_v)]
+    comptime g_qf_v = amar_matmul_skinny_v2[bf16, CPT, type_of(xm_layout), type_of(w_h_qf), type_of(p_qf)]
+    comptime g_h_v = amar_matmul_skinny_v2[bf16, CPT, type_of(xm_layout), type_of(w_h_h), type_of(p_h)]
+    comptime g_kv_v = amar_matmul_skinny_v2[bf16, CPT, type_of(xm_layout), type_of(w_h_kv), type_of(p_kv)]
+    comptime g_32_v = amar_matmul_skinny_v2[bf16, CPT, type_of(xm_layout), type_of(w_h_32), type_of(p_32)]
+    comptime g_ffn_v = amar_matmul_skinny_v2[bf16, CPT, type_of(xm_layout), type_of(w_h_ffn), type_of(p_ffn)]
+    comptime g_down_v = amar_matmul_skinny_v2[bf16, CPT, type_of(ffnm_layout), type_of(w_ffn_h), type_of(p_h)]
+    comptime g_head_v = amar_matmul_skinny_v2[bf16, CPT, type_of(xm_layout), type_of(w_h_v), type_of(p_v)]
 
-    comptime r_qf = skinny_reduce[type_of(p_qf), type_of(qfm_layout)]
-    comptime r_h = skinny_reduce[type_of(p_h), type_of(xm_layout)]
-    comptime r_kv = skinny_reduce[type_of(p_kv), type_of(kvm_flat)]
-    comptime r_add = skinny_reduce_add[type_of(p_h), type_of(xm_layout)]
-    comptime r_swiglu = skinny_reduce_swiglu_bf16[type_of(p_ffn), type_of(ffnm_layout)]
-    comptime r_head = skinny_reduce[type_of(p_v), type_of(vm_layout)]
+    comptime r_qf = amar_skinny_reduce[type_of(p_qf), type_of(qfm_layout)]
+    comptime r_h = amar_skinny_reduce[type_of(p_h), type_of(xm_layout)]
+    comptime r_kv = amar_skinny_reduce[type_of(p_kv), type_of(kvm_flat)]
+    comptime r_add = amar_skinny_reduce_add[type_of(p_h), type_of(xm_layout)]
+    comptime r_swiglu = amar_skinny_reduce_swiglu_bf16[type_of(p_ffn), type_of(ffnm_layout)]
+    comptime r_head = amar_skinny_reduce[type_of(p_v), type_of(vm_layout)]
 
-    comptime rgates_k = ssm_reduce_gates[
+    comptime rgates_k = amar_ssm_reduce_gates[
         type_of(p_32), type_of(g32_layout), type_of(g32_layout)
     ]
-    comptime conv_k = ssm_conv[
+    comptime conv_k = amar_ssm_conv[
         type_of(conv_layout), type_of(cs_layout), type_of(cw_layout), type_of(conv_layout)
     ]
-    comptime l2_k = ssm_qk_l2norm[type_of(conv_layout)]
-    comptime delta_k = ssm_delta_step[
+    comptime l2_k = amar_ssm_qk_l2norm[type_of(conv_layout)]
+    comptime delta_k = amar_ssm_delta_step[
         type_of(s_layout), type_of(conv_layout), type_of(g32_layout), type_of(o_layout)
     ]
-    comptime gated_k = ssm_gated_out_bf16[
+    comptime gated_k = amar_ssm_gated_out_bf16[
         type_of(o_layout), type_of(h_layout), type_of(n128_layout), type_of(h_layout)
     ]
-    comptime split_k = qgate_split[type_of(qfm_layout), type_of(qm_layout), type_of(xflat_layout)]
-    comptime hrms_q = head_rmsnorm[type_of(qm_layout), type_of(hd_layout)]
-    comptime hrms_kv = head_rmsnorm[type_of(kvm_layout), type_of(hd_layout)]
-    comptime rope_q = rope_yarn[type_of(qm_layout)]
-    comptime rope_k = rope_yarn[type_of(kvm_layout)]
-    comptime append_k = kv_append[type_of(cache_layout), type_of(kvm_layout)]
-    comptime att_k = attn_decode[type_of(qm_layout), type_of(cache_layout), type_of(qm_layout)]
-    comptime gmul_k = gate_mul_cast[type_of(xflat_layout), type_of(xflat_layout), type_of(xflat_layout)]
+    comptime split_k = amar_qgate_split[type_of(qfm_layout), type_of(qm_layout), type_of(xflat_layout)]
+    comptime hrms_q = amar_head_rmsnorm[type_of(qm_layout), type_of(hd_layout)]
+    comptime hrms_kv = amar_head_rmsnorm[type_of(kvm_layout), type_of(hd_layout)]
+    comptime rope_q = amar_rope_yarn[type_of(qm_layout)]
+    comptime rope_k = amar_rope_yarn[type_of(kvm_layout)]
+    comptime append_k = amar_kv_append[type_of(cache_layout), type_of(kvm_layout)]
+    comptime att_k = amar_attn_decode[type_of(qm_layout), type_of(cache_layout), type_of(qm_layout)]
+    comptime gmul_k = amar_gate_mul_cast[type_of(xflat_layout), type_of(xflat_layout), type_of(xflat_layout)]
 
     # --- decode loop ---------------------------------------------------------
     var Xm = TileTensor(x_d, xm_layout)
@@ -366,6 +433,10 @@ def main() raises:
     ctx.synchronize()
     var t0 = perf_counter_ns()
 
+    # SSM/conv state lives in a SLOTS-deep ring: row r of a window reads slot
+    # (ring + r) and writes (ring + r + 1), so a k-token window never clobbers
+    # the state a rejected token would have to roll back to.
+    var ring = 0
     var pos = 0
     while pos < n_total - 1:
         var m = 1
@@ -468,26 +539,6 @@ def main() raises:
                 var Zm = TileTensor(z_d, xm_layout)
                 var Eg = TileTensor(eg_d, g32_layout)
                 var Beta = TileTensor(beta_d, g32_layout)
-                var csb = DeviceBuffer[f32](
-                    ctx, convstate_d.unsafe_ptr() + ssm_i * 3 * CONV,
-                    3 * CONV, owning=False,
-                )
-                var s0b = DeviceBuffer[f32](
-                    ctx, sstate_d.unsafe_ptr() + ssm_i * NH_V * SSTATE * SSTATE,
-                    NH_V * SSTATE * SSTATE, owning=False,
-                )
-                var csb_w = DeviceBuffer[f32](
-                    ctx, convstate_d.unsafe_ptr() + ssm_i * 3 * CONV,
-                    3 * CONV, owning=False,
-                )
-                var s0b_w = DeviceBuffer[f32](
-                    ctx, sstate_d.unsafe_ptr() + ssm_i * NH_V * SSTATE * SSTATE,
-                    NH_V * SSTATE * SSTATE, owning=False,
-                )
-                var Cs = TileTensor(csb, cs_layout)
-                var Cs_w = TileTensor(csb_w, cs_layout)
-                var S0 = TileTensor(s0b, s_layout)
-                var S0_w = TileTensor(s0b_w, s_layout)
                 var Conv = TileTensor(conv_d, conv_layout)
                 var So = TileTensor(so_d, o_layout)
                 var ResBm = TileTensor(resb_d, xm_layout)
@@ -506,6 +557,34 @@ def main() raises:
                 ctx.enqueue_function[r_h](Ph, Zm, Int32(m), Int32(H), grid_dim=ceildiv(m * H, 256), block_dim=256)
 
                 for r in range(m):
+                    var rs = (ring + r) % SLOTS
+                    var ws = (ring + r + 1) % SLOTS
+                    var csb = DeviceBuffer[f32](
+                        ctx,
+                        convstate_d.unsafe_ptr() + rs * CONV_SLOT + ssm_i * 3 * CONV,
+                        3 * CONV, owning=False,
+                    )
+                    var csb_w = DeviceBuffer[f32](
+                        ctx,
+                        convstate_d.unsafe_ptr() + ws * CONV_SLOT + ssm_i * 3 * CONV,
+                        3 * CONV, owning=False,
+                    )
+                    var s0b = DeviceBuffer[f32](
+                        ctx,
+                        sstate_d.unsafe_ptr() + rs * SSM_SLOT
+                        + ssm_i * NH_V * SSTATE * SSTATE,
+                        NH_V * SSTATE * SSTATE, owning=False,
+                    )
+                    var s0b_w = DeviceBuffer[f32](
+                        ctx,
+                        sstate_d.unsafe_ptr() + ws * SSM_SLOT
+                        + ssm_i * NH_V * SSTATE * SSTATE,
+                        NH_V * SSTATE * SSTATE, owning=False,
+                    )
+                    var Cs = TileTensor(csb, cs_layout)
+                    var Cs_w = TileTensor(csb_w, cs_layout)
+                    var S0 = TileTensor(s0b, s_layout)
+                    var S0_w = TileTensor(s0b_w, s_layout)
                     var Qkv1 = row_f32(ctx, qkv_d, r * CONV, CONV, conv_layout)
                     var Z1 = row_f32(ctx, z_d, r * H, H, h_layout)
                     var ResB1 = row_bf16(ctx, resb_d, r * H, H, h_layout)
@@ -563,6 +642,9 @@ def main() raises:
             ctx.enqueue_function[r_head](Pv, Logitsm, Int32(m), Int32(VOCAB), grid_dim=ceildiv(m * VOCAB, 256), block_dim=256)
             ctx.enqueue_function[argmax_k](Logitsm, Toks, Int32(VOCAB), Int32(pos + 1), grid_dim=m, block_dim=256)
 
+        # advance by the window width; once verify lands this becomes the
+        # accepted-token count, which is what makes rollback free.
+        ring = (ring + m) % SLOTS
         pos += m
 
     var t_host = Float64(perf_counter_ns() - t0) / 1e9
