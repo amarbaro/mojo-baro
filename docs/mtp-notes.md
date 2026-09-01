@@ -291,3 +291,29 @@ offset-table/B-layout-transposed conventions). To add draft-MTP:
   work — it belongs in the serving loop, not the kernel; mirror
   `common/speculative.cpp`'s `process()`/`draft()`/`accept()` split
   (§3) rather than reinventing the protocol.
+
+## 5. Resolved: mrope vs single-section YaRN for the draft head
+
+§2 step 6 and §4 both say blk.32 uses `ggml_rope_multi` with sections
+`[11,11,10,0]`, while also saying to reuse the trunk's existing RoPE kernel.
+The engine has no mrope — `kernels/attn.mojo`'s `amar_rope_yarn` is
+single-section partial-rotary NEOX YaRN over NROT=64 — so this reads as a
+contradiction, and a reference implementation written against it has to guess.
+
+It is not a guess. In llama.cpp the **trunk** full-attention layers call
+`ggml_rope_multi` at `src/models/qwen35.cpp:303,309`, and the MTP block calls
+the same function with the same `hparams.rope_sections` at `:588,591`. Our
+engine substitutes single-section `amar_rope_yarn` for those trunk calls and
+still reproduces llama.cpp's greedy output **bit-identically over 64 tokens**
+(`tools/check-tokens.sh`). The trunk is therefore already the experiment: for
+pure-text decode, where all four mrope position axes carry identical position
+ids, mrope with these sections and single-section YaRN are numerically
+equivalent — established by measurement, not assumed.
+
+Because blk.32 invokes the identical function with the identical sections, the
+equivalence transfers. **Use `amar_rope_yarn` for the draft head.** Do not port
+mrope for it.
+
+The bound on this claim: it holds only while positions are text-only and shared
+across axes. A multimodal path feeding distinct per-axis position ids would
+break it, and the 64-token gate would not catch that — it never exercises one.
