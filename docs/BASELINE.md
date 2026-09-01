@@ -173,14 +173,16 @@ same chip.
 **fp16 WMMA kernel — measured (`bench/bench_fp16.mojo`, `kernels/amar_matmul_wmma_lds.mojo`).**
 `WARPS 4x2 WTILE 2x4`, 16-byte vector staging, swept over 72 configs with `./bench/sweep.py wmma`:
 
-| size | ours | aiter tuned Triton |
-|---|---|---|
-| 512³ | **10948** | 6175 |
-| 1024³ | (not re-measured) | 47485 |
-| 2048³ | 56593 | 82202 |
-| 4096³ | 66197 | 88897 |
+| size | ours | hipBLASLt fp16 (shim, C fp16) | aiter (measured here) |
+|---|---|---|---|
+| 512³ | **10948** | (not run) | 6204 |
+| 2048³ | 56593 | **80198** | 19757 |
+| 4096³ | 66197 | **83673** | 21124 |
 
-We lead at 512³ and trail by 1.34x at 4096³ (was 3.3x before 2026-09-01).
+**Vendor bar corrected 2026-09-01.** The earlier "aiter 88897" had no source; aiter
+measured on this box is 21k (AMDHQ ledger, CDNA config copy). The vendor for
+fp16 is hipBLASLt fp16 through the shim (`bench/bench_fp16_lt.mojo`, algo
+receipt printed). We trail it 1.26x at 4096³ and 1.42x at 2048³; we beat aiter 3x.
 **The 512³ sweep was the wrong instrument**: it concluded `WTILE_N=1` because
 at 512³ a 128x64 tile leaves 32 blocks on 96 CUs and latency wins. Swept at
 4096³, every top-nine config has **`WTILE_N=4`** (one B fragment feeds four

@@ -87,3 +87,46 @@ lever if pursued: B fragment LDS reads are 16 strided 2-byte loads; a
 swizzled/padded sb layout or transposed staging is the candidate, but the file
 records the transposed attempt costing 3% at the old config -- re-measure at
 this config before trusting that.
+
+## Round 2 (frozen 2026-09-01 at commit d671031): 66.2k -> aiter's 88.9k at 4096^3
+
+| step | change | 4096^3 | verdict rule |
+|---|---|---|---|
+| P | rocprofv3 counters on the step-2 binary (LDS bank conflicts, VGPRs, occupancy) | receipt only | none |
+| 4 | B supplied pre-transposed (NT layout), fragment = two 16-byte LDS reads | >= 1.15x | < 1.05x = LDS reads are not the bottleneck |
+| 5 | workgroup swizzle: block_idx remapped so 8 M-rows of blocks co-reside | >= 1.05x on top of 4 | |
+
+### Round 2 receipts (2026-09-01, kernel at commit 006dadf, all 4096^3, interleaved with step 2 each run)
+
+**The vendor bar was wrong.** BASELINE's "aiter 88897" has no source in the
+vault or the AMDHQ ledger; aiter measured on this machine (CDNA config copy) is
+21124. The vendor for fp16 on this card is **hipBLASLt fp16 via the shim**
+(`bench/bench_fp16_lt.mojo`), now measured with its algo receipt:
+
+| size | hipBLASLt fp16 | receipt | ours (step 2) | gap |
+|---|---|---|---|---|
+| 2048^3 | 80198 | 32 algos, chosen 0, splitK 1, wgm 1, C fp16 | 56593 | 1.42x |
+| 4096^3 | 83673 | 32 algos, chosen 0, splitK 0, wgm 2..16 (search noise), C fp16 | 66197 | 1.26x |
+
+| variant | 4096^3 | vs step 2 | rule |
+|---|---|---|---|
+| P: rocprofv3 --pmc | **no receipt**: hangs indefinitely under the MAX runtime, even at 3 iterations; killed twice | | open |
+| 4a: NT layout, scalar fragment reads | 53.3-54.5k | 0.81x | fail |
+| 4b: NT + 16-byte fragment reads, no pad | 53.6k | 0.81x | fail |
+| 4c: NT + 16-byte reads, LDS row pad 8 halves | 55.2k | 0.84x | fail |
+| 5: workgroup swizzle GROUP_M 8 | 64.2-64.4k | 0.97x | fail |
+| plain BLK_K 32 | 56.8k | 0.86x | |
+| plain BLK_K 64 | 45.7k | 0.69x | |
+
+ISA (code object extracted from the binary, `llvm-objdump --mcpu=gfx1100`):
+step 2 = 135 VGPR, 0 spills, 8 KB LDS; per K-step 8 v_wmma, 4 ds_load_b128 (A),
+64 ds_load_u16 (B), 2 global_load_b128, 2 s_barrier; epilogue 64 scalar stores.
+4c has the textbook mix (8 wmma, 12 ds_load_b128, 0 u16, 130 VGPR) and is still
+16% slower, so LDS instruction count is not the limiter. What 4c changed is the
+global pattern: B rows became 32-byte chunks at 8 KB stride, the pattern A
+already has. Deeper BLK_K fixes that pattern and loses more, tracking LDS
+occupancy (8/4/2 blocks per CU). Conclusion: the kernel hides latency with
+occupancy only; every trade of occupancy for reuse loses. Closing the last
+1.26x needs single-wave software pipelining (two LDS buffers, loads for tile
+k+1 issued before the mma of tile k, fp16 C) -- an L rewrite, not a tweak.
+Drafts: `.work/wmma_nt.mojo`, `.work/wmma_swz.mojo`, `.work/wmma_bk{2,4}.mojo`.
