@@ -31,3 +31,18 @@ The whole measurement repeats 10x in-process.
 Report mean ± min/max over the 10 repeats. Claim a speedup only if the
 bf16 and q8 ranges do not overlap and prediction 1 held. Any deviation
 from this protocol gets disclosed next to the result.
+
+## Result 2026-09-01 (10 repeats, spread <1% — prediction 1 HELD)
+
+| arm | us/launch | vs predicted |
+|---|---|---|
+| bf16 wt-layout | 399–403 | predicted 105–200: **FALSIFIED** (2x over) |
+| q8 wt-layout | 468–474 | predicted 1.5–1.9x faster: **FALSIFIED** (0.85x — slower) |
+| bf16 B-layout (post-hoc arm, transposed at load) | 194–195 | not preregistered; disclosed |
+
+Reading: wt-layout is coalescing-bound (~250 GB/s effective, 26% of HBM
+peak), not byte-bound — so halving bytes with q8 only added dequant ALU
+work. B-layout reaches ~519 GB/s (54% peak). Decision: engine loader
+transposes weights once at load; wt kernels remain for transpose-unaffordable
+cases only. q8 must be re-laid-out K-major (B-layout blocks) before its
+byte advantage can show; re-preregister before claiming.

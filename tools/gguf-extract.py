@@ -113,6 +113,9 @@ def main():
             a16 = (a32.view(np.uint32) >> 16).astype(np.uint16)  # truncate to bf16
             a32t = (a16.astype(np.uint32) << 16).view(np.float32)
             c32 = a32t @ w32.T  # [M, out]
+            (out_dir / f"{safe}.t.bin").write_bytes(
+                np.ascontiguousarray(w16.T).tobytes()
+            )
             (out_dir / f"{safe}.a.bin").write_bytes(a16.tobytes())
             (out_dir / f"{safe}.c.bin").write_bytes(c32.astype(np.float32).tobytes())
             meta[name]["ref_m"] = ref_m
