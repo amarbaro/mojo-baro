@@ -41,6 +41,41 @@ contamination, 1 s clock warm, 200 timed launches, 10 in-process repeats — is 
 [`bench/coldcache-protocol.md`](bench/coldcache-protocol.md), frozen before each
 run alongside its predictions and its falsifier.
 
+## Result: an fp16 WMMA GEMM ahead of hipBLASLt at every size tested
+
+The second kernel line is a square fp16 GEMM on RDNA3's WMMA units. The pipelined
+kernel runs 4x2 warps over a 128x128 block with two LDS buffers, one barrier per
+K-step, a two-deep global prefetch, XOR-swizzled A and transposed B — 188 VGPR,
+zero spills, 32 KB LDS.
+
+One block shape does not win everywhere: at small sizes the 128x128 tile cannot
+fill the GPU with workgroups. Tile geometry is therefore a kernel parameter and
+the launcher dispatches on how many blocks the grid would have — `>= 96` blocks
+takes 128x128 (8 waves), `>= 64` takes 64x128, below that 64x64 (4 waves).
+
+GFLOP/s, ten square sizes, ours vs hipBLASLt fp16 through the same shim, 10 s
+clock warm-up, every arm-defining parameter read back from the binary's own JSON:
+
+| size | 256 | 512 | 768 | 1024 | 1536 | 2048 | 2560 | 3072 | 3584 | 4096 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **ours** | 6372 | 30642 | 64204 | 74824 | 93632 | 91300 | 97974 | 99307 | 105786 | 90705 |
+| hipBLASLt | 6288 | 26324 | 54924 | 63623 | 69332 | 80203 | 87147 | 97224 | 85671 | 82437 |
+| ratio | 1.01 | 1.16 | 1.17 | 1.18 | 1.35 | 1.14 | 1.12 | 1.02 | 1.24 | 1.10 |
+
+Reproduce with `bench/fp16-templates.sh`. Before the dispatch landed the same
+kernel was *behind* the vendor at every size at or below 1024 (0.78–0.98x); the
+single 128x128 tile was the whole deficit.
+
+Warm-up is load-bearing and was worth more than any kernel change at the top
+end: at a 1 s warm-up the identical binary read 66k GFLOP/s at 4096³ instead of
+91k, because the clocks had not settled. Benches now warm for 10 s and log
+`warmup_s` in their receipts.
+
+Note that fp32 WMMA **does not exist** on gfx1100 — it is an ISA limitation, not
+a Mojo one, verified against `llvm-mc` and the LLVM builtin table. fp16 and fp32
+GEMM numbers in this repo are therefore not comparable to each other; they use
+different hardware inside the same chip.
+
 ## How numbers get into this repo
 
 Every performance claim here is preregistered: the question, the instrument, the
