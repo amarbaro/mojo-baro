@@ -70,9 +70,17 @@ def main() raises:
     var B = TileTensor(bd, b_layout)
     var C = TileTensor(cd, c_layout)
 
-    comptime GRID = (ceildiv(N, BLK_N), ceildiv(M, BLK_M))
+    comptime SMALL = ceildiv(N, BLK_N) * ceildiv(M, BLK_M) < 96
+    comptime WM = 2 if SMALL else WARPS_M
+    comptime WN = 2 if SMALL else WARPS_N
+    comptime TM = 2 if SMALL else WTILE_M
+    comptime TN = 2 if SMALL else WTILE_N
+    comptime BM = WM * TM * 16
+    comptime BN = WN * TN * 16
+    comptime NT = WM * WN * 32
+    comptime GRID = (ceildiv(N, BN), ceildiv(M, BM))
     comptime kernel = amar_matmul_wmma_pipe[
-        type_of(a_layout), type_of(b_layout), type_of(c_layout)
+        type_of(a_layout), type_of(b_layout), type_of(c_layout), WM, WN, TM, TN
     ]
     comptime FLOPS = 2.0 * Float64(M) * Float64(N) * Float64(K)
 
@@ -81,14 +89,14 @@ def main() raises:
     while Float64(perf_counter_ns() - w0) / 1.0e9 < WARMUP_SECONDS:
         for _ in range(20):
             ctx.enqueue_function[kernel](
-                A, B, C, Int32(M), Int32(N), Int32(K), grid_dim=GRID, block_dim=NTHREADS
+                A, B, C, Int32(M), Int32(N), Int32(K), grid_dim=GRID, block_dim=NT
             )
         ctx.synchronize()
 
     var t0 = perf_counter_ns()
     for _ in range(ITERS):
         ctx.enqueue_function[kernel](
-            A, B, C, Int32(M), Int32(N), Int32(K), grid_dim=GRID, block_dim=NTHREADS
+            A, B, C, Int32(M), Int32(N), Int32(K), grid_dim=GRID, block_dim=NT
         )
     ctx.synchronize()
     var ms = Float64(perf_counter_ns() - t0) / 1.0e6 / Float64(ITERS)
@@ -105,8 +113,8 @@ def main() raises:
     out += '"correct": ' + ("true" if err < 0.01 else "false") + ", "
     out += '"max_err": ' + String(err) + ", "
     out += '"iters": ' + String(ITERS) + ', "warmup_s": ' + String(WARMUP_SECONDS) + ', "pgr": ' + String(PGR) + ', "lb": ' + String(LB) + ', "tile": 16, "dtype": "float16", '
-    out += '"blk": [' + String(BLK_M) + ", " + String(BLK_N) + ", " + String(BLK_K) + "], "
-    out += '"warps": [' + String(WARPS_M) + ", " + String(WARPS_N) + "], "
-    out += '"wtile": [' + String(WTILE_M) + ", " + String(WTILE_N) + "], "
-    out += '"grid": [' + String(GRID[0]) + ", " + String(GRID[1]) + '], "block": ' + String(NTHREADS) + "}"
+    out += '"blk": [' + String(BM) + ", " + String(BN) + ", " + String(BLK_K) + "], "
+    out += '"warps": [' + String(WM) + ", " + String(WN) + "], "
+    out += '"wtile": [' + String(TM) + ", " + String(TN) + "], "
+    out += '"grid": [' + String(GRID[0]) + ", " + String(GRID[1]) + '], "block": ' + String(NT) + "}"
     print(out)

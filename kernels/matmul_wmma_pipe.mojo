@@ -43,7 +43,13 @@ comptime KSTEPS = BLK_K // WMMA_K
 
 @__llvm_metadata(`rocdl.flat_work_group_size`=StaticTuple[Int32, 1](Int32(LB_MAX)))
 def amar_matmul_wmma_pipe[
-    ALayout: TensorLayout, BLayout: TensorLayout, CLayout: TensorLayout
+    ALayout: TensorLayout,
+    BLayout: TensorLayout,
+    CLayout: TensorLayout,
+    WM: Int = WARPS_M,
+    WN: Int = WARPS_N,
+    TM: Int = WTILE_M,
+    TN: Int = WTILE_N,
 ](
     A: TileTensor[DType.float16, ALayout, MutAnyOrigin],
     B: TileTensor[DType.float16, BLayout, MutAnyOrigin],
@@ -52,6 +58,19 @@ def amar_matmul_wmma_pipe[
     n: Int32,
     k_dim: Int32,
 ):
+    comptime WARPS_M = WM
+    comptime WARPS_N = WN
+    comptime WTILE_M = TM
+    comptime WTILE_N = TN
+    comptime BLK_M = WARPS_M * WTILE_M * WMMA_M
+    comptime BLK_N = WARPS_N * WTILE_N * WMMA_N
+    comptime NTHREADS = WARPS_M * WARPS_N * 32
+    comptime A_VECS = BLK_M * BLK_K // VEC
+    comptime B_VECS = BLK_K * BLK_N // VEC
+    comptime A_PER = A_VECS // NTHREADS
+    comptime B_PER = B_VECS // NTHREADS
+    comptime SB_W = BLK_N if TRANS_B == 0 else (BLK_K + PAD_B if TRANS_B == 1 else BLK_K)
+    comptime SB_H = BLK_K if TRANS_B == 0 else BLK_N
     comptime assert A.flat_rank == 2 and B.flat_rank == 2 and C.flat_rank == 2
     comptime assert A_VECS % NTHREADS == 0 and B_VECS % NTHREADS == 0
     comptime assert SA_W % VEC == 0 and SB_W % VEC == 0
