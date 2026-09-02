@@ -14,7 +14,7 @@ comptime M = 512
 comptime N = 512
 comptime K = 512
 comptime ITERS = 200
-comptime WARMUP_SECONDS = 1.0
+comptime WARMUP_SECONDS = 10.0
 
 
 def check(a: HostBuffer[DType.float16], b: HostBuffer[DType.float16], c: HostBuffer[DType.float16]) -> Float64:
@@ -77,5 +77,6 @@ def main() raises:
     out += '"algo_chosen": ' + String(external_call["amarbaro_algo_chosen", Int32](baro._ctx)) + ", "
     out += '"splitk": ' + String(external_call["amarbaro_splitk", Int32](baro._ctx)) + ", "
     out += '"wgm": ' + String(external_call["amarbaro_wgm", Int32](baro._ctx)) + ", "
+    out += '"iters": ' + String(ITERS) + ', "warmup_s": ' + String(WARMUP_SECONDS) + ', '
     out += '"dtype": "float16", "c_dtype": "float16", "gate": "err<=1.0: fp16 C, |sum|<=4096 has ulp 2"}'
     print(out)
