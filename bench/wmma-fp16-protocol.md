@@ -130,3 +130,52 @@ occupancy only; every trade of occupancy for reuse loses. Closing the last
 1.26x needs single-wave software pipelining (two LDS buffers, loads for tile
 k+1 issued before the mma of tile k, fp16 C) -- an L rewrite, not a tweak.
 Drafts: `.work/wmma_nt.mojo`, `.work/wmma_swz.mojo`, `.work/wmma_bk{2,4}.mojo`.
+
+## Round 3 (2026-09-02): pipelined rewrite, `kernels/matmul_wmma_pipe.mojo`
+
+Vendor receipt first (`TENSILE_DB=0x8000 .work/bench_lt16_4096`): hipBLASLt runs
+`MT96x96x32 WG32_4_1 MIWT3_3 PGR2 PLR1 LDSB0 TLDS1 LPA16` at 4096^3, i.e. 4 waves,
+48x48 wave tiles, DepthU 32, two LDS buffers, global prefetch two deep, transposed
+operand in LDS. Ours was 8 waves, K16, 2 barriers per K-step, no pipelining.
+Hardware receipts: `sharedMemPerMultiprocessor` = 65536 (64 KB LDS per WGP);
+the compiler caps VGPRs at 192 because `max_flat_workgroup_size` defaults to 1024.
+
+Exploration (each row one build+run, 4096^3, ISA receipt via `tools/isa-receipt.py`,
+driver `bench/pipe-sweep.sh`; `.work/pipe-sweep.jsonl` has every row):
+
+| step | config | GFLOP/s | receipt | what it taught |
+|---|---|---|---|---|
+| 0 | old `wmma_lds` 4x2/2x4 K16 | 69-72k | 135 VGPR, 8 KB LDS | same-morning baseline |
+| 1 | 2x2 warps 4x4 K32 2-stage | 14.2k | 192 VGPR, 356 spills | 128 acc + staging spills at the 192 cap |
+| 2 | 2x2 4x2 K32 2-stage, B row-major | 73.9k | 146 VGPR, 28 KB | pipelining alone +5% |
+| 2b | same, B transposed + pad 8 | 62.2k | 155 VGPR | transposed store 16-way bank conflicts |
+| 2c | same, PAD_A 0 (no swizzle) | 57.1k | | A fragment reads 4-way conflicted: -23% |
+| 3 | 2x2 4x2 K32, B transposed, XOR swizzle | 72.2k | 165 VGPR | conflict-free transposed B = parity, not a win |
+| 4 | 4x2 2x4 K32 2-stage (128x128, 8 waves) | 76.8k | 184 VGPR, 36 KB | 36 KB = ONE block per 64 KB WGP |
+| 5 | + A XOR swizzle, PAD_A 0 (32 KB) | 81.8k | 167 VGPR | two blocks per WGP |
+| 6 | + swizzled transposed B | 84.5k | 183 VGPR | now B transposed pays (+3%) |
+| 7 | + ALIGNED (no edge bounds branches) | 89.7k | 165 VGPR | branchy loads cost 6% |
+| 8 | + fp16 C | 89.6k | | C dtype is noise at 4096 |
+| 9 | + `rocdl.flat_work_group_size` metadata, 2x2 warps 4x4 K32 | **91.3k** | 252 VGPR, 0 spills | cap lifted to 256; 4 waves, 64x64 per wave |
+
+Swizzles (row stride 32 halves = 16 dwords, chunk = 8 halves):
+A: chunk' = chunk ^ ((row >> 1) & 3). B stored [n][k] with loader lanes along k,
+chunk' = chunk ^ (((n >> 1) ^ (n >> 3)) & 3). Both conflict-free for the b128
+fragment reads and for the stores (b128 for A, b16 for B).
+
+Launch bounds: `@__llvm_metadata(\`rocdl.flat_work_group_size\`=StaticTuple[Int32, 1](NTHREADS))`
+(receipt `max_flat_workgroup_size=256` in the code-object notes). Trials of
+`MAX_THREADS_PER_BLOCK_METADATA`, `rocdl.max_flat_work_group_size` and integer
+values all fail to compile in Mojo 1.0; this form works.
+
+### Confirmation race, `bench/race-fp16.sh 5 ...` (interleaved, medians of 5, min-max)
+
+| size | vendor hipBLASLt fp16 | ours fp16 C | ours fp32 C | verdict |
+|---|---|---|---|---|
+| 4096^3 | 90121 (89150-91389) | **90954** (90675-91261) | 90098 (89858-90501) | +0.9%, ranges overlap: tie |
+| 2048^3 | 81995 (81823-82066) | **84607** (84562-84683) | 84285 (84240-84367) | +3.2%, disjoint: win |
+| 512^3, 128x128 tile | 27203 (27126-27332) | 17172 | 17323 | 16 blocks on 96 CUs: loss |
+| 512^3, 32x64 tile (2x2 warps, 1x2) | 27203 | **31841** (31762-31966) | | +17%, disjoint: win |
+
+Correctness gate (exact small-integer products) passes on every row. 512 needs a
+size-dispatched config; the kernel default is the 128x128 4x4 config.

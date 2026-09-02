@@ -5,7 +5,7 @@ is reproducible with the command given. If you are an agent picking up a kernel
 task, this is your starting point: **do not re-derive it, and do not trust a
 number that is not in this file or produced by `bench/run.py`.**
 
-Last verified: 2026-09-01 (fp16 WMMA rows; see `bench/wmma-fp16-protocol.md`).
+Last verified: 2026-09-02 (fp16 WMMA rows; see `bench/wmma-fp16-protocol.md` Round 3).
 
 ## Hardware and toolchain
 
@@ -170,24 +170,34 @@ FP16/BF16 -> FP32)"*. **Any fp16 TFLOPS figure (aiter's ~82–89) is therefore n
 comparable to this fp32 benchmark** — they use different hardware inside the
 same chip.
 
-**fp16 WMMA kernel — measured (`bench/bench_fp16.mojo`, `kernels/amar_matmul_wmma_lds.mojo`).**
-`WARPS 4x2 WTILE 2x4`, 16-byte vector staging, swept over 72 configs with `./bench/sweep.py wmma`:
+**fp16 WMMA kernel — measured 2026-09-02 (`bench/bench_fp16_pipe.mojo`, `kernels/matmul_wmma_pipe.mojo`).**
+Pipelined rewrite: 2x2 warps, 4x4 wave tiles (128x128 block, 128 threads), K32,
+two LDS buffers, one barrier per K-step, XOR-swizzled A and transposed B, no pads,
+launch-bounds metadata (252 VGPR, 0 spills, 32 KB LDS = 2 blocks per WGP).
+Interleaved race medians of 5 (`bench/race-fp16.sh`), vendor = hipBLASLt fp16 via shim:
 
-| size | ours | hipBLASLt fp16 (shim, C fp16) | aiter (measured here) |
-|---|---|---|---|
-| 512³ | **10948** | (not run) | 6204 |
-| 2048³ | 56593 | **80198** | 19757 |
-| 4096³ | 66197 | **83673** | 21124 |
+| size | ours (fp16 C) | ours (fp32 C) | hipBLASLt fp16 | old `wmma_lds` | verdict |
+|---|---|---|---|---|---|
+| 512³ | **31841** (32x64 tile) / 17172 (128x128) | 17323 | 27203 | 10948 | +17% with size dispatch |
+| 2048³ | **84607** | 84285 | 81995 | 56593 | +3.2%, ranges disjoint |
+| 4096³ | **90954** | 90098 | 90121 | 66197 | +0.9%, ranges overlap: tie |
 
-**Vendor bar corrected 2026-09-01.** The earlier "aiter 88897" had no source; aiter
-measured on this box is 21k (AMDHQ ledger, CDNA config copy). The vendor for
-fp16 is hipBLASLt fp16 through the shim (`bench/bench_fp16_lt.mojo`, algo
-receipt printed). We trail it 1.26x at 4096³ and 1.42x at 2048³; we beat aiter 3x.
-**The 512³ sweep was the wrong instrument**: it concluded `WTILE_N=1` because
-at 512³ a 128x64 tile leaves 32 blocks on 96 CUs and latency wins. Swept at
-4096³, every top-nine config has **`WTILE_N=4`** (one B fragment feeds four
-mma). Sweep at the size you ship. `BLK_K` stays at 16: 32 with register
-prefetch was flat at 2048³ and -10% at 4096³, 64 halves throughput.
+What moved it, in order (each measured alone at 4096³): pipelining +5%; a 128x128
+tile only once LDS fits two blocks per 64 KB WGP (pads out, swizzles in) +11%;
+conflict-free transposed B +3%; dropping edge-bounds branches +6%; lifting the
+192-VGPR cap so 4x4 wave tiles fit +2%. Transposed B with *padding* was -16%
+(16-way store conflicts), which is why the 2026-09-01 "NT loses" verdict was
+wrong about the cause. Vendor kernel identity (`TENSILE_DB=0x8000`):
+`MT96x96x32 WG 4 waves MIWT3_3 PGR2 PLR1 TLDS1`.
+
+**Two compiler facts that gate every kernel here.** (1) LDS is 64 KB per WGP
+(`sharedMemPerMultiprocessor`), so a 36 KB block runs alone; 32 KB runs two.
+(2) Mojo defaults `max_flat_workgroup_size` to 1024, which caps VGPRs at 192;
+`@__llvm_metadata(\`rocdl.flat_work_group_size\`=StaticTuple[Int32, 1](NTHREADS))`
+raises it to 256 (receipt in the code-object notes, `tools/isa-receipt.py`).
+
+The 2026-09-01 numbers (66197 at 4096³, "occupancy-bound, five variants lose")
+stand as history in the protocol file; the kernel `matmul_wmma_lds.mojo` is kept.
 Step-by-step receipts: `bench/wmma-fp16-protocol.md`.
 
 **fp16 WMMA in Mojo works, and the fragment shape is the trap.** RDNA3 wave32
