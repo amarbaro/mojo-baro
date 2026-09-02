@@ -19,7 +19,10 @@ Last verified: 2026-09-02 (fp16 WMMA rows; see `bench/wmma-fp16-protocol.md` Rou
 | MAX | 26.5.0 |
 | Rust | 1.97.1 (service layer not started) |
 
-Nothing is installed machine-wide. `uv` created `.venv` from the Modular nightly index.
+Nothing is installed machine-wide. `uv sync` creates `.venv` from the tracked
+`pyproject.toml`, which pins `max[all]==26.5.0` (Mojo 1.0.0) from PyPI. **Not the
+nightly index** — an earlier version of this file said nightly, but 26.5.0 is a
+stable release and is not carried there, so a nightly pin does not resolve.
 
 ## Layers
 

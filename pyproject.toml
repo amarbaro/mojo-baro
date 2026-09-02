@@ -1,0 +1,6 @@
+[project]
+name = "mojo-baro"
+version = "0.1.0"
+description = "Mojo GPU kernels and an inference engine for AMD RDNA3 (gfx1100)"
+requires-python = ">=3.10,<3.15"
+dependencies = ["max[all]==26.5.0"]

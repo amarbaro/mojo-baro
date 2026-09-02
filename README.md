@@ -154,13 +154,19 @@ lifetime bug.
 
 ## Building
 
-Requires ROCm 7.2, Mojo 1.0.0 / MAX 26.5.0, and CMake. Nothing is installed
-machine-wide; `uv` creates a repo-local `.venv` from the Modular nightly index.
+Requires ROCm 7.2, CMake, and [`uv`](https://docs.astral.sh/uv/). Nothing is
+installed machine-wide: `uv sync` creates a repo-local `.venv` from
+`pyproject.toml`, which pins `max[all]==26.5.0` (Mojo 1.0.0). Every script in
+this repo invokes `./.venv/bin/mojo` directly and never a system Mojo.
 
 ```sh
+uv sync           # creates .venv with the pinned Mojo/MAX toolchain
 ./run-tests.sh    # builds the shim, checks an fp16 GEMM through the C ABI
 ./bench/run.py    # correctness gate, then throughput
 ```
+
+Verified from a clean clone: `uv sync` then `./run-tests.sh` prints
+`GEMM OK — 4 x 3 @ 3 x 2 matches host reference` and exits 0.
 
 Model weights are not distributed with this repo.
 
