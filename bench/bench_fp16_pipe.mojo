@@ -70,11 +70,11 @@ def main() raises:
     var B = TileTensor(bd, b_layout)
     var C = TileTensor(cd, c_layout)
 
-    comptime SMALL = ceildiv(N, BLK_N) * ceildiv(M, BLK_M) < 96
-    comptime WM = 2 if SMALL else WARPS_M
-    comptime WN = 2 if SMALL else WARPS_N
-    comptime TM = 2 if SMALL else WTILE_M
-    comptime TN = 2 if SMALL else WTILE_N
+    comptime B128 = ceildiv(N, BLK_N) * ceildiv(M, BLK_M)
+    comptime WM = WARPS_M if B128 >= 96 else 2
+    comptime WN = WARPS_N if B128 >= 96 else (4 if B128 >= 64 else 2)
+    comptime TM = WTILE_M if B128 >= 96 else 2
+    comptime TN = WTILE_N if B128 >= 96 else 2
     comptime BM = WM * TM * 16
     comptime BN = WN * TN * 16
     comptime NT = WM * WN * 32

@@ -225,3 +225,24 @@ dispatch (small tile when the 128x128 grid would be < 96 blocks).
 | >= 1536^3 | unchanged (dispatch must not touch these) | any regression > 2% |
 
 Second step only if 64x64 alone does not clear 512^3: split-K.
+
+**Round 4 result** (`19a7b19`, then the three-tier dispatch commit;
+`.work/fp16-templates-round4.log`, `-round4b.log`):
+
+64x64 alone: 256^3 1.10x, 512^3 1.21x, 768^3 1.17x, **1024^3 1.01x -- missed
+the >= 1.10x bar.** 1024^3 wants 8 waves back: six configs at 1024^3 (server
+up, relative only): 64x128 (2x4 warps, 2x2 wtile, 256 threads) 74.7k, 128x64
+70.3k, 64x64 65.5k, 128x64 4-wave 60.6k, 64x64 4x2/1x2 58.7k, 32x32 28.5k.
+64x128 loses to 64x64 at 256/512/768 (fewer blocks). Dispatch on B128 =
+blocks the 128x128 tile would launch: >= 96 -> 128x128 8-wave; >= 64 ->
+64x128 8-wave; else 64x64 4-wave.
+
+| size | ours | hipBLASLt | ratio | prediction |
+|---|---|---|---|---|
+| 256^3 | 6372 | 6288 | 1.01 | "still behind" -- wrong, ahead (barely) |
+| 512^3 | 30642 | 26324 | 1.16 | >= 1.00 met |
+| 768^3 | 64204 | 54924 | 1.17 | -- |
+| 1024^3 | 74824 | 63623 | 1.18 | >= 1.10 met after the 64x128 tier |
+| 1536..4096^3 | unchanged within noise | | 1.02-1.35 | met |
+
+Split-K not needed; not built.
