@@ -184,16 +184,18 @@ def amar_ssm_delta_step[
     var beta = rebind[Scalar[f32]](Beta[h])
     var vj = rebind[Scalar[f32]](ConvOut[2 * KDIM + h * SSTATE + j])
 
+    var col = SIMD[f32, SSTATE]()
+    comptime for i in range(SSTATE):
+        col[i] = rebind[Scalar[f32]](S0[h, i, j])
+
     var sk: Float32 = 0
-    for i in range(SSTATE):
-        sk += rebind[Scalar[f32]](S0[h, i, j]) * eg * rebind[Scalar[f32]](kq[1, i])
+    comptime for i in range(SSTATE):
+        sk += col[i] * eg * rebind[Scalar[f32]](kq[1, i])
     var d = (vj - sk) * beta
 
     var o: Float32 = 0
-    for i in range(SSTATE):
-        var s = rebind[Scalar[f32]](S0[h, i, j]) * eg + rebind[Scalar[f32]](
-            kq[1, i]
-        ) * d
+    comptime for i in range(SSTATE):
+        var s = col[i] * eg + rebind[Scalar[f32]](kq[1, i]) * d
         S1[h, i, j] = rebind[S1.ElementType](s)
         o += s * rebind[Scalar[f32]](kq[0, i])
     O[h, j] = rebind[O.ElementType](o)
