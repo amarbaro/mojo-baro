@@ -163,7 +163,7 @@ A: chunk' = chunk ^ ((row >> 1) & 3). B stored [n][k] with loader lanes along k,
 chunk' = chunk ^ (((n >> 1) ^ (n >> 3)) & 3). Both conflict-free for the b128
 fragment reads and for the stores (b128 for A, b16 for B).
 
-Launch bounds: `@__llvm_metadata(\`rocdl.flat_work_group_size\`=StaticTuple[Int32, 1](NTHREADS))`
+Launch bounds: `@__llvm_metadata(`rocdl.flat_work_group_size`=StaticTuple[Int32, 1](NTHREADS))`
 (receipt `max_flat_workgroup_size=256` in the code-object notes). Trials of
 `MAX_THREADS_PER_BLOCK_METADATA`, `rocdl.max_flat_work_group_size` and integer
 values all fail to compile in Mojo 1.0; this form works.

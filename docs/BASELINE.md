@@ -193,7 +193,7 @@ wrong about the cause. Vendor kernel identity (`TENSILE_DB=0x8000`):
 **Two compiler facts that gate every kernel here.** (1) LDS is 64 KB per WGP
 (`sharedMemPerMultiprocessor`), so a 36 KB block runs alone; 32 KB runs two.
 (2) Mojo defaults `max_flat_workgroup_size` to 1024, which caps VGPRs at 192;
-`@__llvm_metadata(\`rocdl.flat_work_group_size\`=StaticTuple[Int32, 1](NTHREADS))`
+`@__llvm_metadata(`rocdl.flat_work_group_size`=StaticTuple[Int32, 1](NTHREADS))`
 raises it to 256 (receipt in the code-object notes, `tools/isa-receipt.py`).
 
 The 2026-09-01 numbers (66197 at 4096³, "occupancy-bound, five variants lose")
