@@ -205,3 +205,23 @@ Confirmation race (`bench/race-fp16.sh 5`, interleaved, median of 5, min-max):
 | 4096^3 | 89716 (88537-91306) | **97957** (97841-98466) | 91059 | +9.2%, disjoint |
 | 2048^3 | 81698 (80596-81769) | **93841** (93728-94051) | 84823 | +14.9%, disjoint |
 | 512^3 | 27203 | 21619 (128x128) | | still needs the 32x64 size dispatch |
+
+### Round 4 (2026-09-02): 64x64 tile for small grids -- frozen BEFORE building
+
+Diagnosis: at 1024^3 the 128x128 tile gives 64 blocks for 96 CUs (one partial
+wave of work, tail-bound); at 512^3 only 16 blocks. `bench/fp16-templates.sh`
+(10 s warm-up, commit `b5680b7`): 1024^3 0.98x, 512^3 0.86x, 256^3 0.78x vs
+hipBLASLt, ahead everywhere >= 1536^3.
+
+Change: second instantiation of `amar_matmul_wmma_pipe` with WARPS 2x2, WTILE
+2x2 (64x64 block, 4 waves, same PGR2/K32 pipeline), selected by a size
+dispatch (small tile when the 128x128 grid would be < 96 blocks).
+
+| size | prediction | fail |
+|---|---|---|
+| 1024^3 | >= 1.10x hipBLASLt | < 1.00x = diagnosis wrong |
+| 512^3 | >= 1.00x | |
+| 256^3 | still behind (launch floor dominates below ~50 us) | |
+| >= 1536^3 | unchanged (dispatch must not touch these) | any regression > 2% |
+
+Second step only if 64x64 alone does not clear 512^3: split-K.
