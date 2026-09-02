@@ -171,30 +171,34 @@ comparable to this fp32 benchmark** — they use different hardware inside the
 same chip.
 
 **fp16 WMMA kernel — measured 2026-09-02 (`bench/bench_fp16_pipe.mojo`, `kernels/matmul_wmma_pipe.mojo`).**
-Pipelined rewrite: 2x2 warps, 4x4 wave tiles (128x128 block, 128 threads), K32,
-two LDS buffers, one barrier per K-step, XOR-swizzled A and transposed B, no pads,
-launch-bounds metadata (252 VGPR, 0 spills, 32 KB LDS = 2 blocks per WGP).
+Pipelined rewrite: 4x2 warps, 2x4 wave tiles (128x128 block, 256 threads), K32,
+two LDS buffers, one barrier per K-step, **two-deep global prefetch** (tile k+2
+in registers while k+1 waits in the second set), XOR-swizzled A and transposed B,
+no pads, default VGPR cap (188 VGPR, 0 spills, 32 KB LDS = 2 blocks per WGP).
 Interleaved race medians of 5 (`bench/race-fp16.sh`), vendor = hipBLASLt fp16 via shim:
 
-| size | ours (fp16 C) | ours (fp32 C) | hipBLASLt fp16 | old `wmma_lds` | verdict |
-|---|---|---|---|---|---|
-| 512³ | **31841** (32x64 tile) / 17172 (128x128) | 17323 | 27203 | 10948 | +17% with size dispatch |
-| 2048³ | **84607** | 84285 | 81995 | 56593 | +3.2%, ranges disjoint |
-| 4096³ | **90954** | 90098 | 90121 | 66197 | +0.9%, ranges overlap: tie |
+| size | ours (fp16 C) | hipBLASLt fp16 | old `wmma_lds` | verdict |
+|---|---|---|---|---|
+| 512³ | 21619 (128x128) / **31841** (32x64 tile, 1-deep) | 27203 | 10948 | needs size dispatch |
+| 2048³ | **93841** | 81698 | 56593 | +14.9%, ranges disjoint |
+| 4096³ | **97957** | 89716 | 66197 | +9.2%, ranges disjoint |
 
 What moved it, in order (each measured alone at 4096³): pipelining +5%; a 128x128
 tile only once LDS fits two blocks per 64 KB WGP (pads out, swizzles in) +11%;
-conflict-free transposed B +3%; dropping edge-bounds branches +6%; lifting the
-192-VGPR cap so 4x4 wave tiles fit +2%. Transposed B with *padding* was -16%
-(16-way store conflicts), which is why the 2026-09-01 "NT loses" verdict was
-wrong about the cause. Vendor kernel identity (`TENSILE_DB=0x8000`):
-`MT96x96x32 WG 4 waves MIWT3_3 PGR2 PLR1 TLDS1`.
+conflict-free transposed B +3%; dropping edge-bounds branches +6%; two-deep
+prefetch +11% (the 1-deep register prefetch of 2026-09-01 was flat because it
+had one LDS buffer and two barriers; depth pays only on top of double-buffered
+LDS). Transposed B with *padding* was -16% (16-way store conflicts), which is
+why the 2026-09-01 "NT loses" verdict was wrong about the cause. Vendor kernel
+identity (`TENSILE_DB=0x8000`): `MT96x96x32 WG 4 waves MIWT3_3 PGR2 PLR1 TLDS1`.
 
 **Two compiler facts that gate every kernel here.** (1) LDS is 64 KB per WGP
 (`sharedMemPerMultiprocessor`), so a 36 KB block runs alone; 32 KB runs two.
 (2) Mojo defaults `max_flat_workgroup_size` to 1024, which caps VGPRs at 192;
 `@__llvm_metadata(`rocdl.flat_work_group_size`=StaticTuple[Int32, 1](NTHREADS))`
 raises it to 256 (receipt in the code-object notes, `tools/isa-receipt.py`).
+Per-config, not free: it lets 4x4 wave tiles compile spill-free (91k) but makes
+the 8-wave 2x4 kernel 6% slower, and the 98k champion runs with it OFF (`LB=0`).
 
 The 2026-09-01 numbers (66197 at 4096³, "occupancy-bound, five variants lose")
 stand as history in the protocol file; the kernel `matmul_wmma_lds.mojo` is kept.

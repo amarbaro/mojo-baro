@@ -179,3 +179,29 @@ values all fail to compile in Mojo 1.0; this form works.
 
 Correctness gate (exact small-integer products) passes on every row. 512 needs a
 size-dispatched config; the kernel default is the 128x128 4x4 config.
+
+### Round 3b (2026-09-02): two-deep global prefetch (vendor PGR2)
+
+Frozen before building: 4x4 champion at 252 VGPR will spill with a second
+staging set (fail); 8-wave 2x4 config lands only if >= +2%.
+
+| arm | 4096^3 | VGPR / spills | note |
+|---|---|---|---|
+| 2x2 4x4 PGR1 (champion) | 91.5k | 252 / 0 | |
+| 2x2 4x4 PGR2 | 45.8k | 256 / 76 | spills, as predicted |
+| 4x2 2x4 PGR1, cap lifted | 83.4k | 208 / 0 | the metadata *hurts* this config |
+| 4x2 2x4 PGR2, cap lifted | 87.1k | 244 / 0 | |
+| 4x2 2x4 PGR1, default cap | 88.8k | 165 / 0 | |
+| **4x2 2x4 PGR2, default cap** | **98.9k** | 188 / 0 | fits under 192 by 4 registers |
+
+The launch-bounds metadata is therefore per-config: it enables 4x4 wave tiles
+but makes the 8-wave kernel slower (the allocator spends registers it does not
+need). `LB` comptime knob; new default is `LB=0, PGR=2, WARPS 4x2, WTILE 2x4`.
+
+Confirmation race (`bench/race-fp16.sh 5`, interleaved, median of 5, min-max):
+
+| size | vendor | PGR2 8-wave | 4x4 PGR1 | verdict |
+|---|---|---|---|---|
+| 4096^3 | 89716 (88537-91306) | **97957** (97841-98466) | 91059 | +9.2%, disjoint |
+| 2048^3 | 81698 (80596-81769) | **93841** (93728-94051) | 84823 | +14.9%, disjoint |
+| 512^3 | 27203 | 21619 (128x128) | | still needs the 32x64 size dispatch |
