@@ -7,3 +7,4 @@ __pycache__/
 whiteboard.md
 bench/log.jsonl
 bench/sweep.jsonl
+.claude/worktrees/
