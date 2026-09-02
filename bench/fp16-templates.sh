@@ -6,8 +6,9 @@
 set -eu; cd "$(dirname "$0")/.."
 LOG=${1:-.work/fp16-templates-$(date +%Y%m%d-%H%M).log}; exec > >(tee -a "$LOG") 2>&1
 SIZES="256 512 768 1024 1536 2048 2560 3072 3584 4096"
-P=$(pgrep -f '^/home/mario/llama.cpp/build/bin/llama-server' || true); [ -n "$P" ] && { echo "killed llama-server pid $P"; kill $P; sleep 3; }
-trap 'cmd=$(cat ~/Brain/mojo-baro/llama-server-cmdline.txt); (setsid nohup bash -c "$cmd" > .work/llama-server.log 2>&1 < /dev/null &); echo "server restart issued"' EXIT
+P=$(pgrep -f 'llama.cpp/build/bin/llama-server' || true); [ -n "$P" ] && { echo "killed llama-server pid $P"; kill $P; sleep 3; }
+CMDFILE=${LLAMA_SERVER_CMDLINE:-}
+trap '[ -n "$CMDFILE" ] && [ -f "$CMDFILE" ] && { cmd=$(cat "$CMDFILE"); (setsid nohup bash -c "$cmd" > .work/llama-server.log 2>&1 < /dev/null &); echo "server restart issued"; }' EXIT
 echo "commit: $(git rev-parse --short HEAD)  dirty: [$(git status --short | tr '\n' ' ')]  gpu: $(rocm-smi --showproductname 2>/dev/null | grep -m1 'Card series' | sed 's/.*: //')  mojo: $(./.venv/bin/mojo --version | head -1)"
 echo "env: MODULAR_DEVICE_CONTEXT_MEMORY_MANAGER_SIZE_PERCENT=10  sizes: $SIZES  iters + warmup_s per arm: read back from each binary JSON"
 rm -f .work/fp16-tpl_wmma.jsonl .work/fp16-tpl_lt.jsonl

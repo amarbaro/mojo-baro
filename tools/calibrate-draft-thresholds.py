@@ -26,9 +26,10 @@ import sys
 from pathlib import Path
 import numpy as np
 
-sys.path.insert(0, "/home/mario/Projects/mojo-baro/tools")
+_TOOLS = Path(__file__).resolve().parent
+sys.path.insert(0, str(_TOOLS))
 import importlib.util
-_spec = importlib.util.spec_from_file_location("draft_ref", "/home/mario/Projects/mojo-baro/tools/draft-ref.py")
+_spec = importlib.util.spec_from_file_location("draft_ref", _TOOLS / "draft-ref.py")
 dr = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(dr)
 

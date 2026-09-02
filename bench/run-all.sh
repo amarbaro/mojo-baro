@@ -5,13 +5,14 @@ LOG=${1:-.work/runall-$(date +%Y%m%d-%H%M).log}; exec > >(tee -a "$LOG") 2>&1
 export MODULAR_DEVICE_CONTEXT_MEMORY_MANAGER_SIZE_PERCENT=10
 S=$PWD/.work/shim-build; L="-I kernels -Xlinker -L$S -Xlinker -lamarbaro_shim -Xlinker -rpath -Xlinker $S"
 sec() { echo; echo "##### $1  ($(date +%H:%M:%S))"; }
-P=$(pgrep -f '^/home/mario/llama.cpp/build/bin/llama-server' || true); [ -n "$P" ] && { kill $P; sleep 3; }
-trap 'cmd=$(cat ~/Brain/mojo-baro/llama-server-cmdline.txt); (setsid nohup bash -c "$cmd" > .work/llama-server.log 2>&1 < /dev/null &); echo "server restart issued"' EXIT
+P=$(pgrep -f 'llama.cpp/build/bin/llama-server' || true); [ -n "$P" ] && { echo "killed llama-server pid $P"; kill $P; sleep 3; }
+CMDFILE=${LLAMA_SERVER_CMDLINE:-}
+trap '[ -n "$CMDFILE" ] && [ -f "$CMDFILE" ] && { cmd=$(cat "$CMDFILE"); (setsid nohup bash -c "$cmd" > .work/llama-server.log 2>&1 < /dev/null &); echo "server restart issued"; }' EXIT
 echo "commit: $(git rev-parse --short HEAD)  dirty: $(git status --short | tr '\n' ' ')  gpu: $(rocm-smi --showproductname 2>/dev/null | grep -m1 'Card series' | sed 's/.*: //')"
 sec "run-tests.sh (shim + fp32 GEMM parity)"; ./run-tests.sh 2>&1 | grep -viE "crashpad|warning: doc" | tail -8
 sec "bench/run.py fp32 512^3"; ./bench/run.py 2>&1 | grep -viE crashpad | tail -8
-sec "fp16 WMMA ours 512/2048/4096"; bench/fp16-sizes.sh bench/bench_fp16.mojo wmma 512 2048 4096 2>&1 | grep '^{'
-sec "hipBLASLt fp16 2048/4096"; bench/fp16-sizes.sh bench/bench_fp16_lt.mojo lt 2048 4096 2>&1 | grep '^{'
+sec "fp16 WMMA pipe ours 512/2048/4096"; bench/fp16-sizes.sh bench/bench_fp16_pipe.mojo pipe 512 2048 4096 2>&1 | grep '^{'
+sec "hipBLASLt fp16 512/2048/4096"; bench/fp16-sizes.sh bench/bench_fp16_lt.mojo lt 512 2048 4096 2>&1 | grep '^{'
 sec "kernel parity tests"
 for t in test_elementwise test_ssm_block test_attn_block test_q8_gemm test_gguf_gemm; do
   echo "--- $t"; ./.venv/bin/mojo build kernels/$t.mojo -o .work/$t $L 2>&1 | grep -E "error" -A3 | head -6; ./.work/$t 2>&1 | grep -viE crashpad | tail -4
