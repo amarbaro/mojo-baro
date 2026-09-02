@@ -183,6 +183,21 @@ Interleaved race medians of 5 (`bench/race-fp16.sh`), vendor = hipBLASLt fp16 vi
 | 2048³ | **93841** | 81698 | 56593 | +14.9%, ranges disjoint |
 | 4096³ | **97957** | 89716 | 66197 | +9.2%, ranges disjoint |
 
+Size dispatch landed 2026-09-02 (`6a4e38e`): the kernel takes warps/wtile as
+parameters; the bench picks the tile from the number of 128x128 blocks the
+grid would launch: >= 96 -> 128x128 8-wave, >= 64 -> 64x128 8-wave (2x4/2x2),
+else 64x64 4-wave (2x2/2x2). `bench/fp16-templates.sh` (10 s warm-up, one build
+per size, receipts in JSON), ours vs hipBLASLt:
+
+| size | 256³ | 512³ | 768³ | 1024³ | 1536³ | 2048³ | 2560³ | 3072³ | 3584³ | 4096³ |
+|---|---|---|---|---|---|---|---|---|---|---|
+| ours | 6372 | 30642 | 64204 | 74824 | 93632 | 91300 | 97974 | 99307 | 105786 | 90705 |
+| hipBLASLt | 6288 | 26324 | 54924 | 63623 | 69332 | 80203 | 87147 | 97224 | 85671 | 82437 |
+| ratio | 1.01 | 1.16 | 1.17 | 1.18 | 1.35 | 1.14 | 1.12 | 1.02 | 1.24 | 1.10 |
+
+Warm-up matters: at the old 1 s warm-up the same binary read 66k at 4096³
+(clocks not settled); benches now warm 10 s and log `warmup_s`.
+
 What moved it, in order (each measured alone at 4096³): pipelining +5%; a 128x128
 tile only once LDS fits two blocks per 64 KB WGP (pads out, swizzles in) +11%;
 conflict-free transposed B +3%; dropping edge-bounds branches +6%; two-deep
