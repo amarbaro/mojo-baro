@@ -201,6 +201,23 @@ per size, receipts in JSON), ours vs hipBLASLt:
 Warm-up matters: at the old 1 s warm-up the same binary read 66k at 4096³
 (clocks not settled); benches now warm 10 s and log `warmup_s`.
 
+Clock under WMMA load (`bench/clock-probe.sh`, 2026-09-02, 4096³ 128x128 8-wave,
+two runs): sclk holds 2559–2709 MHz, median ~2.6 GHz, at 278–320 W package
+power and 72–77 °C junction. Lighter kernels hold ~3000 MHz at the same power
+(the 44k kernel of 2026-09-01 read 3005–3008 MHz at 291–307 W), so the matrix
+path is power-bound and the peak to measure against is 96 CU × 512 FLOP/clk ×
+2.6 GHz ≈ 128 TFLOP/s (512 FLOP/clk/CU = AMD's 122.8 TFLOPS spec ÷ 2.5 GHz
+÷ 96 CU), not 123 at spec boost or 147 at 3 GHz. The shipped kernel runs at
+70–76% of that at 4096³ (89.5k/91.8k in the probes, 97957 race median) and 82%
+at 3584³. That 15–20% is the whole remaining kernel-side headroom and none of
+the textbook items claims it: LDS staging, XOR swizzle and edge-branch removal
+are already in; fp16 fragments are already register-packed (the 4x4 config at
+252 VGPR with 0 spills cannot exist unpacked: 128 acc + 128 bfr + 64 staging
+before addressing); a vectorized epilogue is ≤1% at 4096³ (64 scalar stores
+per wave against ~8000 main-loop instructions), and the D-fragment layout (a
+lane owns rows 2i+half of one column) cannot widen a store without a permute
+or an LDS-staged transpose.
+
 What moved it, in order (each measured alone at 4096³): pipelining +5%; a 128x128
 tile only once LDS fits two blocks per 64 KB WGP (pads out, swizzles in) +11%;
 conflict-free transposed B +3%; dropping edge-bounds branches +6%; two-deep

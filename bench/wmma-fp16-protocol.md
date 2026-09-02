@@ -246,3 +246,40 @@ blocks the 128x128 tile would launch: >= 96 -> 128x128 8-wave; >= 64 ->
 | 1536..4096^3 | unchanged within noise | | 1.02-1.35 | met |
 
 Split-K not needed; not built.
+
+### Round 5 (2026-09-02): clock under load -- where the remaining headroom is
+
+Trigger: an external review of `kernels/matmul_wmma.mojo` (the retired direct
+kernel) read as if it were the shipped one, claiming large headroom from LDS
+staging, XOR swizzle, fp16 register packing and a vectorized epilogue. Against
+the pipe kernel: staging, swizzle and edge-branch removal are rounds 3-3b;
+packing is forced by the receipts above (252 VGPR / 0 spills for 4x4 is
+impossible unpacked: 128 acc + 128 bfr + 64 staging before addressing, and
+WMMA operands are packed-half VGPR tuples by ISA definition); the epilogue is
+64 scalar stores per wave against ~8000 main-loop instructions at 4096^3
+(<= 1%), and the D layout (lane owns rows 2i+half of one column) needs a
+permute or an LDS-staged transpose before any store can widen. The direct
+kernel's A loads were already vectorized by the compiler (`ea4eff2`); its
+scalar path was B, and the 16-byte staging fix was step 1 of round 1 (1.5-1.6x).
+
+Not on record until now: the clock the card holds under WMMA load.
+`bench/clock-probe.sh <cmd>` samples rocm-smi around any command and prints the
+busy-window receipt. Two runs of the 4096^3 128x128 8-wave binary (llama-server
+resident but idle; diagnostic, not a number of record; arm read back from the
+JSON: pgr 2, lb 0, blk 128x128x32, warps 4x2, wtile 2x4, grid 32x32, 256
+threads, iters 200, warm 10 s, correct, max_err 2.2e-4):
+
+| run | gflops | sclk min/med/max, busy | power | junction max |
+|---|---|---|---|---|
+| 1 | 91754 | 2608/2615/2667 MHz | 281-302 W | 77 C |
+| 2 | 89459 | 2559/2606/2709 MHz | 278-320 W | 77 C |
+
+The 2026-09-01 44k kernel held 3005-3008 MHz at 291-307 W (line 38). The
+matrix path is power-bound: peak at 2.6 GHz = 96 x 512 x 2.6e9 = 128 TFLOP/s
+(512 FLOP/clk/CU = 122.8 TFLOPS spec / 2.5 GHz / 96 CU). Utilisation: 70-72%
+in these probes, 76% at the 97957 race median, 82% at 3584^3 (105786). The
+remaining kernel-side headroom is that 15-20%, and being power-bound it is
+reached by fewer instructions per FLOP (which lifts the clock), not by more
+overlap. Open: the 4096^3 number of record spans 90.7k-98.0k across runs
+(templates table vs race median); the clock spread seen here is the likely
+cause and has not been separated from thermal order.
