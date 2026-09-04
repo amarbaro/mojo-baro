@@ -485,3 +485,30 @@ Mojo build are `ALL_VMEM`/`ALL_DS`/`MFMA`; `.work/r6/race-1.2-{4096,2048}.log`):
 Floor (>= +1% disjoint) met at 2048^3, not yet at 4096^3 (overlap of one
 sample). Same build, one confirmation race of 10 rounds at 4096^3 before
 adjudication; decision rule unchanged.
+
+**Round 7 result, lever 1.2 SGB, confirmation** (10 rounds, 4096^3,
+`.work/r6/race-1.2-4096-confirm.log`): abl0 88533 (87643-89596), sgb1 88862
+(88532-90000), +0.37%, overlapping. Floor not met at 4096^3; met at 2048^3
+only. **Not kept** (knob stays 0). It is the only lever of the round that
+did not regress, and the +1% at 2048^3 is real; if a size-specialised
+build is ever shipped, SGB=1 for <= 2048^3 is preregistered here as +1%.
+
+### Round 7 close (2026-09-04)
+
+Five levers, five first builds, zero kept: PRIO -3.5%, NT-B -8%/-28%,
+4x4 tile spills (control -5.9%), HOIST ISA no-op, SGB +0.4%/+1.0%.
+Champion unchanged: 128x128x32, 8 waves, 2x4 wave tile, PGR2 =
+**89-91k GFLOP/s at 4096^3 = 0.71 R** (0.82 R per clock at 2.6 GHz),
+hipBLASLt 0.65 R. Stop rule (c) fires (< 0.85 R after Phases 1-3):
+no sweep. What the round established, with receipts:
+
+- R = 125.4 TFLOP/s, 436 FLOP/clk/CU, and the WMMA units alone hold
+  3.0 GHz under the 290 W cap; the GEMM's memory traffic is what throttles
+  the card to 2.6 GHz. The remaining 29% is 13% clock and 19% issue.
+- Every lever that cut traffic raised the clock exactly as that model
+  predicts, and every one of them lost more per clock than it gained:
+  the champion sits at a local optimum where LDS read pattern, wave
+  count and register budget are all tight at once.
+- The levers left are not knobs: a different LDS swizzle for a
+  transposed tile, a 4x4 tile at a smaller block, or a raised power cap
+  (Decision D1, OS-level, not taken). Each is a new preregistered round.

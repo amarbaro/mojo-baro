@@ -289,3 +289,12 @@ Do not trust large-tile intuition on this card. Measure it.
    an agent. It is exact, free, and already beat a hand-tuned config by 1.38×.
 4. **New strategies go in their own file** (`kernels/matmul_<strategy>.mojo`) and
    register a variant in `bench/bench.mojo`. Never edit another agent's kernel.
+
+### fp16 roofline on this card (2026-09-04, protocol Round 6-7)
+
+WMMA-only microbenchmark under the 290 W cap: **R = 125.4 TFLOP/s**, 436
+FLOP/clk/CU at 3.0 GHz (`bench/bench_wmma_peak.mojo`). The pipe kernel at
+4096^3 is 89-91k GFLOP/s = 0.71 R at 2.6 GHz (0.82 R per clock);
+hipBLASLt is 0.65 R at 2.9 GHz. The gap is 13% clock (energy per FLOP)
+and 19% issue. Five levers were raced in Round 7 and none kept; details
+and receipts in `bench/wmma-fp16-protocol.md`.
