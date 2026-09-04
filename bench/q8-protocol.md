@@ -71,3 +71,34 @@ BARO_PROFILE=1 shares before closing; no post-hoc kernel sweep.
 
 ## Not in this round
 int4, KV cache quantization, activation quantization, MTP draft-head speed.
+
+## Amendment before Q1 (2026-09-04): qingming-gfx1100-gemv receipt
+
+Built `uulong950/qingming-gfx1100-gemv` (fp32 GEMV, HIP, ROCm 7.2) at our
+decode shapes, single buffer per shape so only the >= 128 MB rows are HBM
+numbers (`.work/ref/qingming-smoke-20260904.csv`):
+
+| shape (rows x K) | bytes | native us | GB/s | rocBLAS GB/s | path |
+|---|---|---|---|---|---|
+| 12288 x 4096 (ffn gate/up) | 201 MB | 218.8 | **920 (96%)** | 858 | STREAMING |
+| 8192 x 4096 (qf) | 134 MB | 152.5 | 881 | 826 | STREAMING |
+| 4096 x 12288 (down) | 201 MB | 264.2 | 762 | 719 | STREAMING |
+
+STREAMING = one wave per weight ROW in weight-native [out, in] layout: each
+lane reads a float per 32-lane strip, 8 strips per 256-wide K tile with a
+per-wave phase rotation, nontemporal loads, register prefetch of the next
+tile, wave-reduce at the end, no LDS, no split-K, `__launch_bounds__(256,2)`.
+
+Consequence for this round: the binding "K-major only" is REPLACED. The
+2026-09-01 wt-layout falsification (250 GB/s) was our thread-per-column
+implementation, not the layout; wave-per-row over weight-native rows is the
+fastest measured stream on this card and needs no load-time transpose.
+For q8_0 it is the natural fit: the 32-wide blocks run along K inside a row,
+so one lane-strip = one block and the scale is a single broadcast load.
+
+Q1 is therefore two arms, both preregistered here:
+- Q1a bf16 wave-per-row (`amar_matmul_skinny_m1_row`), prediction 105-115 us
+  at the 100 MB ffn shape (vs 121.4 today), land <= 115 us. Bit-exact is NOT
+  claimed (different summation order); token gate re-established.
+- Q1b q8 wave-per-row, prediction 62-75 us, land <= 85 us (tightened from 90).
+Stop rule for Q1 unchanged: q8 > 100 us closes the round.
