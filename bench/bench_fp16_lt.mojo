@@ -15,6 +15,7 @@ comptime N = 512
 comptime K = 512
 comptime ITERS = 200
 comptime WARMUP_SECONDS = 10.0
+comptime OPB = 0
 
 
 def check(a: HostBuffer[DType.float16], b: HostBuffer[DType.float16], c: HostBuffer[DType.float16]) -> Float64:
@@ -25,7 +26,10 @@ def check(a: HostBuffer[DType.float16], b: HostBuffer[DType.float16], c: HostBuf
         for col in range(0, N, CSTEP):
             var want = Float64(0)
             for p in range(K):
-                want += Float64(a[r * K + p]) * Float64(b[p * N + col])
+                comptime if OPB == 1:
+                    want += Float64(a[r * K + p]) * Float64(b[col * K + p])
+                else:
+                    want += Float64(a[r * K + p]) * Float64(b[p * N + col])
             var err = abs(Float64(c[r * N + col]) - want)
             if err > worst:
                 worst = err
@@ -41,8 +45,13 @@ def main() raises:
     # values in {-1,0,1} so K=4096 sums stay exact in fp16 output range
     for i in range(M * K):
         ah[i] = Scalar[DType.float16]((i % 3) - 1)
-    for i in range(K * N):
-        bh[i] = Scalar[DType.float16]((i % 3) - 1)
+    comptime if OPB == 1:
+        for n in range(N):
+            for p in range(K):
+                bh[n * K + p] = Scalar[DType.float16](((p * N + n) % 3) - 1)
+    else:
+        for i in range(K * N):
+            bh[i] = Scalar[DType.float16]((i % 3) - 1)
     var ad = ctx.enqueue_create_buffer[DType.float16](M * K)
     var bd = ctx.enqueue_create_buffer[DType.float16](K * N)
     var cd = ctx.enqueue_create_buffer[DType.float16](M * N)
@@ -57,11 +66,17 @@ def main() raises:
     var w0 = perf_counter_ns()
     while Float64(perf_counter_ns() - w0) / 1.0e9 < WARMUP_SECONDS:
         for _ in range(20):
-            baro.gemm_f16(M, N, K, pa, pb, pc)
+            comptime if OPB == 1:
+                baro.gemm_f16_nt(M, N, K, pa, pb, pc)
+            else:
+                baro.gemm_f16(M, N, K, pa, pb, pc)
         baro.sync()
     var t0 = perf_counter_ns()
     for _ in range(ITERS):
-        baro.gemm_f16(M, N, K, pa, pb, pc)
+        comptime if OPB == 1:
+            baro.gemm_f16_nt(M, N, K, pa, pb, pc)
+        else:
+            baro.gemm_f16(M, N, K, pa, pb, pc)
     baro.sync()
     var ms = Float64(perf_counter_ns() - t0) / 1.0e6 / Float64(ITERS)
     ctx.enqueue_copy(dst_buf=ch, src_buf=cd)
@@ -77,6 +92,6 @@ def main() raises:
     out += '"algo_chosen": ' + String(external_call["amarbaro_algo_chosen", Int32](baro._ctx)) + ", "
     out += '"splitk": ' + String(external_call["amarbaro_splitk", Int32](baro._ctx)) + ", "
     out += '"wgm": ' + String(external_call["amarbaro_wgm", Int32](baro._ctx)) + ", "
-    out += '"iters": ' + String(ITERS) + ', "warmup_s": ' + String(WARMUP_SECONDS) + ', '
+    out += '"iters": ' + String(ITERS) + ', "warmup_s": ' + String(WARMUP_SECONDS) + ', "opb": ' + String(OPB) + ', '
     out += '"dtype": "float16", "c_dtype": "float16", "gate": "err<=1.0: fp16 C, |sum|<=4096 has ulp 2"}'
     print(out)
