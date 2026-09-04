@@ -10,7 +10,8 @@ from pathlib import Path
 
 import numpy as np
 
-D = Path(__file__).resolve().parent.parent / ".work/engine-pack"
+import os
+D = Path(os.environ.get("BARO_PACK", str(Path(__file__).resolve().parent.parent / ".work/engine-pack")))
 H, FFN, CONV, KDIM = 4096, 12288, 8192, 2048
 NH_K, NH_V, S = 16, 32, 128
 HD, NQH, NKVH, NROT = 256, 16, 4, 64
@@ -28,6 +29,13 @@ def T(name, shape):
     if dt == "bf16":
         raw = pack[off : off + n * 2].view(np.uint16)
         return (raw.astype(np.uint32) << 16).view(np.float32).reshape(shape)
+    if dt == "q8":
+        # int8 [out, in] + fp16 scales [out, in/32]; returned as the same
+        # [in, out] f32 view the bf16 path gives (shape is (in, out)).
+        n_in, n_out = shape
+        q = pack[off : off + n].view(np.int8).reshape(n_out, n_in // 32, 32)
+        d = pack[off + n : off + n + (n // 32) * 2].view(np.float16).reshape(n_out, n_in // 32, 1)
+        return np.ascontiguousarray((q.astype(np.float32) * d.astype(np.float32)).reshape(n_out, n_in).T)
     return pack[off : off + n * 4].view(np.float32).reshape(shape).copy()
 
 

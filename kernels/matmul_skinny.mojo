@@ -252,21 +252,23 @@ def amar_matmul_skinny_m1_row[
         O[row] = rebind[O.ElementType](total)
 
 
-def amar_matmul_skinny_m1_q8row[
-    UNROLL: Int,
+def amar_matmul_skinny_q8row[
+    UNROLL: Int, MR: Int,
     ALayout: TensorLayout, QLayout: TensorLayout, SLayout: TensorLayout,
-    OLayout: TensorLayout
+    PLayout: TensorLayout
 ](
     A: TileTensor[DType.bfloat16, ALayout, MutAnyOrigin],
     Q: TileTensor[DType.int8, QLayout, MutAnyOrigin],
     S: TileTensor[DType.float16, SLayout, MutAnyOrigin],
-    O: TileTensor[dtype, OLayout, MutAnyOrigin],
+    Cp: TileTensor[dtype, PLayout, MutAnyOrigin],
+    m: Int32,
     n: Int32,
     k_dim: Int32,
 ):
     comptime assert A.flat_rank == 2 and Q.flat_rank == 2
-    comptime assert S.flat_rank == 2 and O.flat_rank == 1
+    comptime assert S.flat_rank == 2 and Cp.flat_rank == 3
 
+    var M = Int(m)
     var N = Int(n)
     var K = Int(k_dim)
     var lane = Int(lane_id())
@@ -274,11 +276,11 @@ def amar_matmul_skinny_m1_q8row[
     if row >= N:
         return
 
-    comptime QV = 16
+    comptime QV = 16 if MR == 1 else 8
     comptime STEP = WARP_SIZE * QV
     var Qv = Q.vectorize[1, QV]()
     var Av = A.vectorize[1, QV]()
-    var acc = SIMD[dtype, QV](0)
+    var acc = InlineArray[SIMD[dtype, QV], MR](fill=SIMD[dtype, QV](0))
 
     var kk = 0
     while kk + UNROLL * STEP <= K:
@@ -292,19 +294,24 @@ def amar_matmul_skinny_m1_q8row[
 
         comptime for u in range(UNROLL):
             var kb = kk + u * STEP
-            var a = rebind[SIMD[DType.bfloat16, QV]](Av[0, kb // QV + lane]).cast[dtype]()
-            acc += (qs[u].cast[dtype]() * ds[u].cast[dtype]()) * a
+            var w = qs[u].cast[dtype]() * ds[u].cast[dtype]()
+            for r in range(M):
+                var a = rebind[SIMD[DType.bfloat16, QV]](Av[r, kb // QV + lane]).cast[dtype]()
+                acc[r] += w * a
         kk += UNROLL * STEP
     while kk < K:
         var q = rebind[SIMD[DType.int8, QV]](Qv[row, kk // QV + lane]).cast[dtype]()
         var d = rebind[Scalar[DType.float16]](S[row, (kk + lane * QV) // 32]).cast[dtype]()
-        var a = rebind[SIMD[DType.bfloat16, QV]](Av[0, kk // QV + lane]).cast[dtype]()
-        acc += (q * d) * a
+        var w = q * d
+        for r in range(M):
+            var a = rebind[SIMD[DType.bfloat16, QV]](Av[r, kk // QV + lane]).cast[dtype]()
+            acc[r] += w * a
         kk += STEP
 
-    var total = warp.sum(acc.reduce_add())
-    if lane == 0:
-        O[row] = rebind[O.ElementType](total)
+    for r in range(M):
+        var total = warp.sum(acc[r].reduce_add())
+        if lane == 0:
+            Cp[0, r, row] = rebind[Cp.ElementType](total)
 
 
 def amar_matmul_skinny_m1_dual[
@@ -445,7 +452,7 @@ def amar_matmul_skinny_q8b[
 
 
 def amar_skinny_reduce_swiglu[
-    PLayout: TensorLayout, CLayout: TensorLayout
+    PLayout: TensorLayout, CLayout: TensorLayout, NSPLIT: Int = SPLITK
 ](
     Gp: TileTensor[dtype, PLayout, MutAnyOrigin],
     Up: TileTensor[dtype, PLayout, MutAnyOrigin],
@@ -465,7 +472,7 @@ def amar_skinny_reduce_swiglu[
 
     var g: Scalar[dtype] = 0
     var u: Scalar[dtype] = 0
-    comptime for s in range(SPLITK):
+    comptime for s in range(NSPLIT):
         g += rebind[Scalar[dtype]](Gp[s, r, c])
         u += rebind[Scalar[dtype]](Up[s, r, c])
     var silu = g / (1 + exp(-g))
@@ -473,7 +480,7 @@ def amar_skinny_reduce_swiglu[
 
 
 def amar_skinny_reduce_swiglu_bf16[
-    PLayout: TensorLayout, CLayout: TensorLayout
+    PLayout: TensorLayout, CLayout: TensorLayout, NSPLIT: Int = SPLITK
 ](
     Gp: TileTensor[dtype, PLayout, MutAnyOrigin],
     Up: TileTensor[dtype, PLayout, MutAnyOrigin],
@@ -493,7 +500,7 @@ def amar_skinny_reduce_swiglu_bf16[
 
     var g: Scalar[dtype] = 0
     var u: Scalar[dtype] = 0
-    comptime for s in range(SPLITK):
+    comptime for s in range(NSPLIT):
         g += rebind[Scalar[dtype]](Gp[s, r, c])
         u += rebind[Scalar[dtype]](Up[s, r, c])
     var silu = g / (1 + exp(-g))
@@ -501,7 +508,7 @@ def amar_skinny_reduce_swiglu_bf16[
 
 
 def amar_skinny_reduce_add[
-    PLayout: TensorLayout, YLayout: TensorLayout
+    PLayout: TensorLayout, YLayout: TensorLayout, NSPLIT: Int = SPLITK
 ](
     Cp: TileTensor[dtype, PLayout, MutAnyOrigin],
     Y: TileTensor[dtype, YLayout, MutAnyOrigin],
@@ -519,13 +526,13 @@ def amar_skinny_reduce_add[
     var c = gid % N
 
     var acc: Scalar[dtype] = 0
-    comptime for s in range(SPLITK):
+    comptime for s in range(NSPLIT):
         acc += rebind[Scalar[dtype]](Cp[s, r, c])
     Y[r, c] = rebind[Y.ElementType](rebind[Scalar[dtype]](Y[r, c]) + acc)
 
 
 def amar_skinny_reduce[
-    PLayout: TensorLayout, CLayout: TensorLayout
+    PLayout: TensorLayout, CLayout: TensorLayout, NSPLIT: Int = SPLITK
 ](
     Cp: TileTensor[dtype, PLayout, MutAnyOrigin],
     C: TileTensor[dtype, CLayout, MutAnyOrigin],
@@ -543,6 +550,6 @@ def amar_skinny_reduce[
     var c = gid % N
 
     var acc: Scalar[dtype] = 0
-    comptime for s in range(SPLITK):
+    comptime for s in range(NSPLIT):
         acc += rebind[Scalar[dtype]](Cp[s, r, c])
     C[r, c] = rebind[C.ElementType](acc)

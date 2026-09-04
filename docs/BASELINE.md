@@ -55,6 +55,22 @@ LUT is gfx1151-only**, and MIGraphX EP is already installed system-wide.
 against a host reference. `./bench/run.py` gates on correctness *before*
 reporting throughput and exits non-zero if any variant is wrong.
 
+## Engine (2026-09-04)
+
+`serve/engine.mojo` runs on the **q8 pack** by default (`BARO_PACK`, default
+`.work/engine-pack-q8`, built by `tools/engine-pack.py MODEL.gguf OUTDIR --q8`;
+`tools/q8-check.py` proves it bit-equal to `llama-quantize Q8_0`). All 2D
+weight GEMMs are `amar_matmul_skinny_q8row`: one wave per weight row over the
+weight-native [out, in] int8 layout plus fp16 block-32 scales, 855 GB/s on
+the ffn shape (62.6 us per 100 MB-equivalent stream). Decode: **68.8 tok/s_gen**,
+64/64 greedy identity with llama.cpp Q8_0 and the bf16 reference; llama.cpp
+Q8_0 no-spec bar 74.1. The bf16 pack path (41.7 tok/s) is gone from the
+engine; its numbers stay in `bench/q8-protocol.md`.
+
+Weight-native wave-per-row is the fastest measured stream on this card
+(qingming-gfx1100-gemv 917 GB/s fp32; ours 856 bf16 / 855 q8). The earlier
+"wt-layout is coalescing-bound" verdict was about a thread-per-column kernel.
+
 ## Measured kernel performance
 
 512×512×512, fp32, 200 iterations, 10 warmup. Run-to-run spread <0.5%.

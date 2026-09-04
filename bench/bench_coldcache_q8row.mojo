@@ -14,7 +14,7 @@ from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import TileTensor, row_major
 
 from matmul_skinny import (
-    amar_matmul_skinny_m1, amar_matmul_skinny_m1_row, amar_matmul_skinny_m1_q8row,
+    amar_matmul_skinny_m1, amar_matmul_skinny_m1_row, amar_matmul_skinny_q8row,
     SM, SPLITK, SK_THREADS, ROW_WAVES, ROW_THREADS,
 )
 
@@ -150,7 +150,7 @@ def main() raises:
 
     comptime m1c8 = amar_matmul_skinny_m1[bf16, 8, type_of(a_layout), type_of(b_layout), type_of(p_layout)]
     comptime row8 = amar_matmul_skinny_m1_row[bf16, 8, type_of(a_layout), type_of(w_layout), type_of(o_layout)]
-    comptime q8row = amar_matmul_skinny_m1_q8row[4, type_of(a_layout), type_of(q_layout), type_of(s_layout), type_of(o_layout)]
+    comptime q8row = amar_matmul_skinny_q8row[4, 1, type_of(a_layout), type_of(q_layout), type_of(s_layout), type_of(p_layout)]
     comptime G8 = (ceildiv(N, SK_THREADS * 8), SPLITK)
     comptime GR = ceildiv(N, ROW_WAVES)
 
@@ -170,9 +170,11 @@ def main() raises:
     ctx.synchronize()
     print("row8 max_rel vs bf16 ref:", max_rel(c_host, o_host), " abs/maxref:", max_abs_norm(c_host, o_host))
     var qt0 = q_tensors(ctx, q_dev, 0)
-    ctx.enqueue_function[q8row](A, qt0[0], qt0[1], O, Int32(N), Int32(K), grid_dim=GR, block_dim=ROW_THREADS)
-    ctx.enqueue_copy(dst_buf=o_host, src_buf=o_dev)
+    ctx.enqueue_function[q8row](A, qt0[0], qt0[1], Cp, Int32(M), Int32(N), Int32(K), grid_dim=GR, block_dim=ROW_THREADS)
+    ctx.enqueue_copy(dst_buf=p_host, src_buf=p_dev)
     ctx.synchronize()
+    for j in range(N):
+        o_host[j] = p_host[j]
     print("q8row max_rel vs dequant ref:", max_rel(cq_host, o_host), " abs/maxref:", max_abs_norm(cq_host, o_host), " vs bf16 ref abs/maxref:", max_abs_norm(c_host, o_host))
 
     print("rep  m1c8_us  row8_us  q8row_us")
@@ -207,12 +209,12 @@ def main() raises:
         while Float64(perf_counter_ns() - w0) / 1.0e9 < 1.0:
             for b in range(NBUF):
                 var qt = q_tensors(ctx, q_dev, b)
-                ctx.enqueue_function[q8row](A, qt[0], qt[1], O, Int32(N), Int32(K), grid_dim=GR, block_dim=ROW_THREADS)
+                ctx.enqueue_function[q8row](A, qt[0], qt[1], Cp, Int32(M), Int32(N), Int32(K), grid_dim=GR, block_dim=ROW_THREADS)
             ctx.synchronize()
         t0 = perf_counter_ns()
         for it in range(ITERS):
             var qt = q_tensors(ctx, q_dev, it % NBUF)
-            ctx.enqueue_function[q8row](A, qt[0], qt[1], O, Int32(N), Int32(K), grid_dim=GR, block_dim=ROW_THREADS)
+            ctx.enqueue_function[q8row](A, qt[0], qt[1], Cp, Int32(M), Int32(N), Int32(K), grid_dim=GR, block_dim=ROW_THREADS)
         ctx.synchronize()
         var q_us = Float64(perf_counter_ns() - t0) / 1.0e3 / Float64(ITERS)
 

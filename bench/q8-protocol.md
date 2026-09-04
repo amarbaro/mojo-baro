@@ -167,3 +167,41 @@ absolute error (max |err| / max |ref|): q8row 1.1e-7, champion 1.0e-6. Kernel
 is correct; cancellation on near-zero outputs made the relative metric
 noisy. Quantization effect vs bf16 outputs: 0.64% of max output, that is
 what G1/G2 judge at token level.
+
+### Q2 receipt (2026-09-04): LANDED (G1 pending)
+
+Engine converted in place to the q8 pack (`serve/engine.mojo`: offsets read
+from the pack index, `BARO_PACK` selects the pack dir, every 2D weight GEMM
+is `amar_matmul_skinny_q8row`, reduces run with NSPLIT=1; the dual gate+up
+launch of F1 is back to two launches). Baseline = the bf16 binary
+`.work/engine` built 2026-09-02 from `b265eb5`, run in the same stint,
+alternating, embedding server on the card in both arms as before.
+
+| arm | tok/s_gen x3 | median | pack bytes read back | gate |
+|---|---|---|---|---|
+| bf16 `.work/engine` | 41.66, 41.63, 41.68 | 41.66 | 18396352512 | 64/64 |
+| q8 `.work/engine-q8` | 68.82, 68.77, 68.64 | **68.77 (+65%)** | 10728640512 | 64/64 vs bf16 ref AND 64/64 vs llama.cpp Q8_0 |
+
+Prediction 62-72: landed. Land rule >= 54.2: yes. G2: engine-q8, llama.cpp
+Q8_0 and the bf16 reference all agree on 64/64, so first divergence is
+beyond the window for both. G3: pack bytes printed by the timed binary
+distinguish the arms; ISA receipt of `.work/engine-q8` shows the two q8row
+instantiations (MR=1 93 VGPR, MR=8 66 VGPR, zero spills) and no bf16 skinny
+kernels. Draft head: `DRAFT: from_token 369 draft_argmax 369` unchanged.
+
+G1 (numpy fp32 forward over the same q8 pack, `tools/model-ref.py decode 64`
+with `BARO_PACK=.work/engine-pack-q8`) is running: ~3 min/token on one core,
+log `.work/engine-pack-q8/numpy-decode-64.log`. The 68.77 figure is
+provisional until it reports 64/64; tokens 1-2 match so far.
+
+### Q3 receipt (2026-09-04): llama.cpp Q8_0 bar = 74.0 tok/s
+
+`tools/llama-ref-run.sh`, no speculative flags, greedy, token-id prompt,
+`-ctk/-ctv q8_0`: 73.89, 74.11, 74.18, 73.52, 74.17 -> median of last 4
+**74.14**; `draft_n` null in every response, model path read back from
+`/props` (`.work/llama-q8/props.json`). Prediction 65-78: landed.
+Ours / bar = 68.77 / 74.14 = **0.93x** (predicted 0.9-1.1x).
+
+Round summary: 41.7 -> 68.8 tok/s_gen (+65%) at 64/64; vs llama.cpp Q8_0
+0.93x, same ratio class as bf16 (0.94x). Remaining gap to the 93 tok/s q8
+roof: 26%, spread over the same non-GEMM kernels as before.

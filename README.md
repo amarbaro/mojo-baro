@@ -121,6 +121,13 @@ discard the first, median of the remaining 4.
 | **mojo-baro `tok/s_gen`** | **41.3** (41.04–41.38, 0.8% spread) | 77% |
 | llama.cpp, MTP speculative | 109.8 | — |
 
+2026-09-04, q8 weights (`bench/q8-protocol.md`, pack bit-equal to llama.cpp Q8_0):
+
+| | tok/s | of q8 HBM roof (93) |
+|---|---|---|
+| llama.cpp Q8_0, no MTP | 74.1 | 80% |
+| **mojo-baro q8 `tok/s_gen`** | **68.8** (68.64–68.82) | 74% |
+
 So the trunk decode path runs at **0.94x llama.cpp** with no speculative
 decode. Disclosed asymmetries, uncorrected: llama.cpp uses a q8_0 KV cache and
 ours is f32 (negligible at these context lengths), and llama.cpp's number came
