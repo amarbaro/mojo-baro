@@ -1,5 +1,8 @@
 """WMMA-only roofline microbenchmark (kernels/wmma_peak.mojo). No global memory
 traffic in the timed loop: measures matrix-core issue rate alone, not a GEMM.
+
+NUM_CU below is this box's XTX. It sizes the grid, so it is arm-defining on any
+other card: run bench/wmma-peak.sh, which patches it from the running GPU.
 """
 
 from std.sys import has_accelerator

@@ -51,6 +51,17 @@ Numbers are not quoted anywhere in this repo unless they can be traced to a
 commit, a warm-up and a correctness check. That is why the script refuses to
 emit a clean-looking receipt it cannot stand behind.
 
+## Other benches on unfamiliar hardware
+
+`bench/wmma-peak.sh` measures the WMMA issue-rate roofline. The grid is sized to
+fill the card, so the compute-unit count is arm-defining; the script reads it
+from the running GPU rather than trusting the 96 hardcoded in the source for
+this box's XTX. Pass a count explicitly to override.
+
+The rest of the benches need model weights, which are not distributed here, so
+`bench/report.sh` and `bench/wmma-peak.sh` are the two that will run on a fresh
+clone.
+
 ## Code changes
 
 Read `bench/PROTOCOL-RULES.md` first, and `docs/BASELINE.md` for current truth.
