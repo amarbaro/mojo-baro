@@ -447,3 +447,23 @@ instead of 32) and launch bounds on.
 | lever | knob | prediction @4096^3 | keep floor | fail rule |
 |---|---|---|---|---|
 | 2.1 4x4 PGR2 streamed-B | `WARPS_M=2 WARPS_N=2 WTILE_M=4 WTILE_N=4 PGR=2 LB=1 BSTREAM=1` | +5-10% vs abl0 if issue-bound; sclk may rise | >= +3% disjoint at 4096^3, >= 0 at 2048^3 | ISA receipt with any spill -> do not time, stop the lever; two builds < +3% -> rejected |
+
+**Round 7 result, lever 2.1** (2026-09-04, branch `lane-b-4x4` in
+`.work/wt-B`, BSTREAM knob; `.work/r6/race-2.1-4096.log`):
+
+Receipts first: the preregistered arm (4x4, PGR2, LB=1, BSTREAM=1) compiles
+to 256 VGPR with **76 spills** (scratch_load/store present) -> per the fail
+rule it was not timed and the lever stops. The PGR1 control (same tile,
+one-deep prefetch, BSTREAM=1) is 251 VGPR / 0 spills and was raced:
+
+| arm | median GFLOP/s (min-max, 5) | sclk_med | FLOP/clk/CU |
+|---|---|---|---|
+| abl0 champion 2x4, 8 waves | 89283 (88419-90118) | 2604 MHz | 357 |
+| 4x4 PGR1 streamed-B, 4 waves | 84060 (82906-84348) | 2748 MHz | 319 |
+
+-5.9%, disjoint. Halving LDS reads per FLOP did raise the clock (+5.5%)
+as the energy model predicted, but per-clock throughput fell 11%: with 4
+waves per CU and one-deep prefetch there is not enough latency hiding, and
+the two-deep variant that would fix it does not fit in 256 VGPR with a
+128x128 block. Lever 2.1 closed: the 4x4 tile is register-bound on
+gfx1100 at this block size. Not merged (branch kept for the record).
