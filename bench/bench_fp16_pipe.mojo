@@ -11,7 +11,7 @@ from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext, HostBuffer
 from layout import TileTensor, row_major
 
-from matmul_wmma_pipe import amar_matmul_wmma_pipe, BLK_M, BLK_N, BLK_K, NTHREADS, WARPS_M, WARPS_N, WTILE_M, WTILE_N, PAD_A, PAD_B, TRANS_B, ALIGNED, C_DTYPE, PGR, LB, ABL, PRIO, TB, HOIST
+from matmul_wmma_pipe import amar_matmul_wmma_pipe, BLK_M, BLK_N, BLK_K, NTHREADS, WARPS_M, WARPS_N, WTILE_M, WTILE_N, PAD_A, PAD_B, TRANS_B, ALIGNED, C_DTYPE, PGR, LB, ABL, PRIO, TB, HOIST, SGB
 
 comptime M = 512
 comptime N = 512
@@ -120,7 +120,7 @@ def main() raises:
     out += '"gflops": ' + String(FLOPS / (ms * 1.0e6)) + ", "
     out += '"correct": ' + ("true" if err < 0.01 else "false") + ", "
     out += '"max_err": ' + String(err) + ", "
-    out += '"iters": ' + String(ITERS) + ', "warmup_s": ' + String(WARMUP_SECONDS) + ', "pgr": ' + String(PGR) + ', "lb": ' + String(LB) + ', "abl": ' + String(ABL) + ', "prio": ' + String(PRIO) + ', "tb": ' + String(TB) + ', "hoist": ' + String(HOIST) + ', "tile": 16, "dtype": "float16", '
+    out += '"iters": ' + String(ITERS) + ', "warmup_s": ' + String(WARMUP_SECONDS) + ', "pgr": ' + String(PGR) + ', "lb": ' + String(LB) + ', "abl": ' + String(ABL) + ', "prio": ' + String(PRIO) + ', "tb": ' + String(TB) + ', "hoist": ' + String(HOIST) + ', "sgb": ' + String(SGB) + ', "tile": 16, "dtype": "float16", '
     out += '"blk": [' + String(BM) + ", " + String(BN) + ", " + String(BLK_K) + "], "
     out += '"warps": [' + String(WM) + ", " + String(WN) + "], "
     out += '"wtile": [' + String(TM) + ", " + String(TN) + "], "

@@ -1,5 +1,5 @@
 from max.gpu.memory import AddressSpace
-from max.gpu.sync import barrier
+from max.gpu.sync import barrier, schedule_group_barrier, AMDScheduleBarrierMask
 from std.gpu import block_idx, thread_idx
 from std.math import ceildiv
 from layout import TileTensor, TensorLayout, row_major, stack_allocation
@@ -27,6 +27,7 @@ comptime ABL = 0
 comptime PRIO = 0
 comptime TB = 0
 comptime HOIST = 0
+comptime SGB = 0
 comptime LB_MAX = NTHREADS if LB == 1 else 1024
 comptime C_DTYPE = DType.float16 if C_F16 == 1 else DType.float32
 
@@ -311,6 +312,12 @@ def amar_matmul_wmma_pipe[
                                 stb[s * VEC + i] = x[i]
 
             comptime for ks in range(KSTEPS):
+                comptime if SGB == 1:
+                    schedule_group_barrier(AMDScheduleBarrierMask.ALL_VMEM, 4, 0)
+                    schedule_group_barrier(AMDScheduleBarrierMask.ALL_DS, 4, 0)
+                    schedule_group_barrier(AMDScheduleBarrierMask.MFMA, 2, 0)
+                    schedule_group_barrier(AMDScheduleBarrierMask.ALL_DS, 2, 0)
+                    schedule_group_barrier(AMDScheduleBarrierMask.MFMA, 2, 0)
                 var bfr = SIMD[DType.float16, WTILE_N * 16](0)
                 comptime for tn in range(WTILE_N):
                     comptime if ABL == 3:
@@ -664,6 +671,12 @@ def amar_matmul_wmma_pipe[
                                             stb1[s * VEC + i] = x[i]
 
                     comptime for ks in range(KSTEPS):
+                        comptime if SGB == 1:
+                            schedule_group_barrier(AMDScheduleBarrierMask.ALL_VMEM, 4, 0)
+                            schedule_group_barrier(AMDScheduleBarrierMask.ALL_DS, 4, 0)
+                            schedule_group_barrier(AMDScheduleBarrierMask.MFMA, 2, 0)
+                            schedule_group_barrier(AMDScheduleBarrierMask.ALL_DS, 2, 0)
+                            schedule_group_barrier(AMDScheduleBarrierMask.MFMA, 2, 0)
                         var bfr = SIMD[DType.float16, WTILE_N * 16](0)
                         comptime for tn in range(WTILE_N):
                             comptime if ABL == 3:
