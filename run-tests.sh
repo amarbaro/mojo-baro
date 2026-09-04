@@ -8,3 +8,5 @@ cmake --build "$S" -j"$(nproc)" >/dev/null
 ./.venv/bin/mojo build kernels/test_gemm.mojo -o .work/test_gemm -I kernels \
   -Xlinker -L"$S" -Xlinker -lamarbaro_shim -Xlinker -rpath -Xlinker "$S"
 ./.work/test_gemm
+
+python3 tools/kernel-census.py --check
