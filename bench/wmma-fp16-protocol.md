@@ -316,3 +316,34 @@ receipt does establish: at the same power cap the vendor kernel holds
 throttled 10% deeper; ours does 356 FLOP/clk/CU = 70% of the 512 peak, the
 vendor 296 = 58%. The clock deficit is the round-5 diagnosis confirmed under
 protocol: the lever is energy per FLOP, not overlap.
+
+**Round 6 result, step 0.3 -- roofline R** (2026-09-04, `.work/r6/roofline-0.3.log`,
+`kernels/wmma_peak.mojo` commit ee6ab9e, 16 waves/CU, ITERS 4096, correct: true):
+
+| arm | median GFLOP/s (3) | sclk_med | FLOP/clk/CU | power |
+|---|---|---|---|---|
+| n8 (8 independent acc) | 125375 (124856-125530) | 2988-3002 MHz | 434-437 | 265-317 W |
+| n2 (2 acc, dependent chain) | 126021 (125737-126865) | 2981-2989 MHz | 438-443 | 238-293 W |
+
+**R = 125.4 TFLOP/s.** Both predictions missed: FLOP/clk/CU is 436, not
+480-512 (the WMMA pipe issues at ~85% of the 512 nominal even with nothing
+else in flight), and the 2-accumulator chain is NOT slower (prediction
+<= 60%): back-to-back dependent `v_wmma` costs nothing extra on gfx1100, so
+accumulator count is not a lever. Stop rule (a) not hit (436 < 900).
+The WMMA-only kernel holds 3.0 GHz at the same 290 W cap where the GEMM
+holds 2.6 GHz: the matrix units alone do not pull the card to the cap, the
+GEMM's LDS/VALU/address traffic does. Champion at 4096^3 = 89.5k =
+**0.71 R** (0.82 R per clock). Target 0.90 R = 113k GFLOP/s.
+
+### Round 6 step 0.4 -- ablation ladder, frozen BEFORE running
+
+Arms `.work/fp16_abl{0,1,2,3}_4096` (commit eaf05f0), 3 probed samples each,
+interleaved. With R = 125.4 TFLOP/s, t_R = 1.096 ms. Predictions (ms, from
+the plan, re-based on measured R): abl3 1.15-1.25; abl2 1.35-1.45;
+abl0 1.40-1.50 (= 89-98k); abl1 0.7-0.9. Reading: t3 - t_R = loop/barrier
+overhead; t2 - t3 = LDS read + address cost; t0 - t2 = exposed global
+latency; t1 = memory skeleton. Receipt caveat recorded before running: abl2
+spills 7 VGPR and abl3 spills 69 (abl0/abl1 spill 0), so t3 is an upper
+bound on the register-resident cost, not a clean number. Fail rule: if
+t0 - t2 > 0.15 ms the plan's ordering (diet before prefetch) is wrong and
+Phase 3 moves ahead of Phase 1.
