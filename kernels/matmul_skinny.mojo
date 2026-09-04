@@ -295,23 +295,26 @@ def amar_matmul_skinny_q8row[
         comptime for u in range(UNROLL):
             var kb = kk + u * STEP
             var w = qs[u].cast[dtype]() * ds[u].cast[dtype]()
-            for r in range(M):
-                var a = rebind[SIMD[DType.bfloat16, QV]](Av[r, kb // QV + lane]).cast[dtype]()
-                acc[r] += w * a
+            comptime for r in range(MR):
+                if r < M:
+                    var a = rebind[SIMD[DType.bfloat16, QV]](Av[r, kb // QV + lane]).cast[dtype]()
+                    acc[r] += w * a
         kk += UNROLL * STEP
     while kk < K:
         var q = rebind[SIMD[DType.int8, QV]](Qv[row, kk // QV + lane]).cast[dtype]()
         var d = rebind[Scalar[DType.float16]](S[row, (kk + lane * QV) // 32]).cast[dtype]()
         var w = q * d
-        for r in range(M):
-            var a = rebind[SIMD[DType.bfloat16, QV]](Av[r, kk // QV + lane]).cast[dtype]()
-            acc[r] += w * a
+        comptime for r in range(MR):
+            if r < M:
+                var a = rebind[SIMD[DType.bfloat16, QV]](Av[r, kk // QV + lane]).cast[dtype]()
+                acc[r] += w * a
         kk += STEP
 
-    for r in range(M):
-        var total = warp.sum(acc[r].reduce_add())
-        if lane == 0:
-            Cp[0, r, row] = rebind[Cp.ElementType](total)
+    comptime for r in range(MR):
+        if r < M:
+            var total = warp.sum(acc[r].reduce_add())
+            if lane == 0:
+                Cp[0, r, row] = rebind[Cp.ElementType](total)
 
 
 def amar_matmul_skinny_m1_dual[
