@@ -1,6 +1,8 @@
 
 from std.gpu import block_idx, global_idx, lane_id, thread_idx, WARP_SIZE
 from std.gpu.primitives import warp
+from std.memory import bitcast
+from std.sys.intrinsics import llvm_intrinsic
 from std.math import exp
 from max.gpu.memory import AddressSpace
 from max.gpu.sync import barrier
@@ -389,6 +391,85 @@ def amar_matmul_skinny_q4row[
     comptime for r in range(MR):
         if r < M:
             var total = warp.sum(acc[r].reduce_add())
+            if lane == 0:
+                Cp[0, r, row] = rebind[Cp.ElementType](total)
+
+
+def amar_matmul_skinny_q8dot[
+    UNROLL: Int, MR: Int,
+    AQLayout: TensorLayout, ASLayout: TensorLayout,
+    QLayout: TensorLayout, SLayout: TensorLayout,
+    PLayout: TensorLayout
+](
+    Aq: TileTensor[DType.int8, AQLayout, MutAnyOrigin],
+    As: TileTensor[DType.float16, ASLayout, MutAnyOrigin],
+    Q: TileTensor[DType.int8, QLayout, MutAnyOrigin],
+    S: TileTensor[DType.float16, SLayout, MutAnyOrigin],
+    Cp: TileTensor[dtype, PLayout, MutAnyOrigin],
+    m: Int32,
+    n: Int32,
+    k_dim: Int32,
+):
+    comptime assert Aq.flat_rank == 2 and As.flat_rank == 2
+    comptime assert Q.flat_rank == 2 and S.flat_rank == 2 and Cp.flat_rank == 3
+
+    var M = Int(m)
+    var N = Int(n)
+    var K = Int(k_dim)
+    var lane = Int(lane_id())
+    var row = Int(block_idx.x) * ROW_WAVES + Int(thread_idx.x) // WARP_SIZE
+    if row >= N:
+        return
+
+    comptime QV = 16
+    comptime STEP = WARP_SIZE * QV
+    comptime DOTN = QV // 4
+    var Qv = Q.vectorize[1, QV]()
+    var Aqv = Aq.vectorize[1, QV]()
+    var acc = InlineArray[Scalar[dtype], MR](fill=Scalar[dtype](0))
+
+    var kk = 0
+    while kk + UNROLL * STEP <= K:
+        var qs = InlineArray[SIMD[DType.int8, QV], UNROLL](uninitialized=True)
+        var ds = InlineArray[Scalar[DType.float16], UNROLL](uninitialized=True)
+
+        comptime for u in range(UNROLL):
+            var kb = kk + u * STEP
+            qs[u] = rebind[SIMD[DType.int8, QV]](Qv[row, kb // QV + lane])
+            ds[u] = rebind[Scalar[DType.float16]](S[row, (kb + lane * QV) // 32])
+
+        comptime for u in range(UNROLL):
+            var kb = kk + u * STEP
+            var ws = ds[u].cast[dtype]()
+            var wv4 = bitcast[DType.int32, DOTN](qs[u])
+            comptime for r in range(MR):
+                if r < M:
+                    var aq = rebind[SIMD[DType.int8, QV]](Aqv[r, kb // QV + lane])
+                    var as_r = rebind[Scalar[DType.float16]](As[r, (kb + lane * QV) // 32]).cast[dtype]()
+                    var av4 = bitcast[DType.int32, DOTN](aq)
+                    var dot = Int32(0)
+                    comptime for d in range(DOTN):
+                        dot = llvm_intrinsic["llvm.amdgcn.sdot4", Int32](wv4[d], av4[d], dot, False)
+                    acc[r] += Float32(dot) * ws * as_r
+        kk += UNROLL * STEP
+    while kk < K:
+        var q = rebind[SIMD[DType.int8, QV]](Qv[row, kk // QV + lane])
+        var ws = rebind[Scalar[DType.float16]](S[row, (kk + lane * QV) // 32]).cast[dtype]()
+        var wv4 = bitcast[DType.int32, DOTN](q)
+        comptime for r in range(MR):
+            if r < M:
+                var aq = rebind[SIMD[DType.int8, QV]](Aqv[r, kk // QV + lane])
+                var as_r = rebind[Scalar[DType.float16]](As[r, (kk + lane * QV) // 32]).cast[dtype]()
+                var av4 = bitcast[DType.int32, DOTN](aq)
+                var dot = Int32(0)
+                comptime for d in range(DOTN):
+                    dot = llvm_intrinsic["llvm.amdgcn.sdot4", Int32](wv4[d], av4[d], dot, False)
+                acc[r] += Float32(dot) * ws * as_r
+        kk += STEP
+
+    comptime for r in range(MR):
+        if r < M:
+            var total = warp.sum(acc[r])
             if lane == 0:
                 Cp[0, r, row] = rebind[Cp.ElementType](total)
 

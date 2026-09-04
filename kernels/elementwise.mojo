@@ -350,3 +350,37 @@ def amar_tok_copy[
     if i >= Int(n):
         return
     Dst[Int(di) + i] = rebind[Dst.ElementType](Src[Int(si) + i])
+
+
+def amar_quantize_q8_rows[
+    ALayout: TensorLayout, QLayout: TensorLayout, SLayout: TensorLayout
+](
+    A: TileTensor[DType.bfloat16, ALayout, MutAnyOrigin],
+    Aq: TileTensor[DType.int8, QLayout, MutAnyOrigin],
+    As: TileTensor[DType.float16, SLayout, MutAnyOrigin],
+    m: Int32,
+    k_dim: Int32,
+):
+    comptime assert A.flat_rank == 2 and Aq.flat_rank == 2 and As.flat_rank == 2
+
+    var M = Int(m)
+    var K = Int(k_dim)
+    var row = Int(block_idx.x)
+    var blk = Int(block_idx.y)
+    var lane = Int(lane_id())
+    var k = blk * 32 + lane
+    if row >= M or k >= K:
+        return
+
+    var x = rebind[Scalar[DType.bfloat16]](A[row, k]).cast[f32]()
+    var wmax = warp.max(abs(x))
+    var scale = wmax / Float32(127) if wmax > 0 else Float32(1)
+    var v = x / scale
+    var q = Int32(v + Float32(0.5)) if v >= 0 else -Int32(-v + Float32(0.5))
+    if q > 127:
+        q = 127
+    if q < -127:
+        q = -127
+    Aq[row, k] = rebind[Aq.ElementType](Int8(q))
+    if lane == 0:
+        As[row, blk] = rebind[As.ElementType](scale.cast[DType.float16]())
