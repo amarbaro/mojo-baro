@@ -4,6 +4,7 @@ from std.gpu import block_idx, thread_idx
 from std.math import ceildiv
 from layout import TileTensor, TensorLayout, row_major, stack_allocation
 from layout.tensor_core import mma
+from std.sys.intrinsics import llvm_intrinsic
 from std.utils import StaticTuple
 
 comptime WMMA_M = 16
@@ -23,6 +24,7 @@ comptime C_F16 = 1
 comptime PGR = 2
 comptime LB = 0
 comptime ABL = 0
+comptime PRIO = 0
 comptime LB_MAX = NTHREADS if LB == 1 else 1024
 comptime C_DTYPE = DType.float16 if C_F16 == 1 else DType.float32
 
@@ -268,6 +270,8 @@ def amar_matmul_wmma_pipe[
                             comptime for i in range(VEC):
                                 bfr[tn * 16 + i] = lo[i]
                                 bfr[tn * 16 + VEC + i] = hi[i]
+                comptime if PRIO == 1:
+                    llvm_intrinsic["llvm.amdgcn.s.setprio", NoneType](Int16(3))
                 comptime for tm in range(WTILE_M):
                     var a = SIMD[DType.float16, 16](0)
                     comptime if ABL == 3:
@@ -312,6 +316,8 @@ def amar_matmul_wmma_pipe[
                             mma(d, a, b, c)
                             comptime for i in range(8):
                                 acc[(tm * WTILE_N + tn) * 8 + i] = d[i]
+            comptime if PRIO == 1:
+                llvm_intrinsic["llvm.amdgcn.s.setprio", NoneType](Int16(0))
             comptime if ABL == 3:
                 cached3 = True
 
@@ -515,6 +521,8 @@ def amar_matmul_wmma_pipe[
                                     comptime for i in range(VEC):
                                         bfr[tn * 16 + i] = lo[i]
                                         bfr[tn * 16 + VEC + i] = hi[i]
+                        comptime if PRIO == 1:
+                            llvm_intrinsic["llvm.amdgcn.s.setprio", NoneType](Int16(3))
                         comptime for tm in range(WTILE_M):
                             var a = SIMD[DType.float16, 16](0)
                             comptime if ABL == 3:
@@ -559,6 +567,8 @@ def amar_matmul_wmma_pipe[
                                     mma(d, a, b, c)
                                     comptime for i in range(8):
                                         acc[(tm * WTILE_N + tn) * 8 + i] = d[i]
+                    comptime if PRIO == 1:
+                        llvm_intrinsic["llvm.amdgcn.s.setprio", NoneType](Int16(0))
                     comptime if ABL == 3:
                         cached3_2 = True
 
