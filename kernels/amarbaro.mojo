@@ -67,6 +67,16 @@ struct AmarBaro(Movable):
         if rc != 0:
             raise Error("gemm_f16 failed: ", Self.last_error())
 
+    def gemm_f16_nt(
+        self, m: Int, n: Int, k: Int, a: Int, b: Int, c: Int,
+        alpha: Float32 = 1.0, beta: Float32 = 0.0,
+    ) raises:
+        var rc = external_call["amarbaro_gemm_f16_nt", Int32](
+            self._ctx, Int32(m), Int32(n), Int32(k), a, b, c, alpha, beta
+        )
+        if rc != 0:
+            raise Error("gemm_f16_nt failed: ", Self.last_error())
+
 
 def main() raises:
     var baro = AmarBaro()

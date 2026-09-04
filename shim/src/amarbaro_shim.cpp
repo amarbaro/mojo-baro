@@ -49,6 +49,15 @@ struct amarbaro_ctx {
   int best_splitk, best_wgm;
   bool have_tuned;
   hipDataType cached_dt;
+  /* Same, for the NT (opB = HIPBLAS_OP_T) entry -- a different kernel
+     population, so the tuned (algo, splitK, wgm) does not transfer. */
+  bool have_algo_nt;
+  hipblasLtMatmulAlgo_t algo_nt;
+  int cached_m_nt, cached_n_nt, cached_k_nt;
+  int n_algos_nt, chosen_algo_nt;
+  int best_splitk_nt, best_wgm_nt;
+  bool have_tuned_nt;
+  hipDataType cached_dt_nt;
 };
 
 extern "C" amarbaro_ctx *amarbaro_init(int device_id) {
@@ -108,15 +117,33 @@ bool ensure_workspace(amarbaro_ctx *ctx, size_t bytes) {
 }
 
 /* Row-major A(m,k)*B(k,n) is issued as the column-major product B'(n,k)*A'(k,m),
-   so hipBLASLt sees a plain NN GEMM with the operands swapped. */
+   so hipBLASLt sees a plain NN GEMM with the operands swapped.
+
+   nt: b is [n][k] row-major (ldb = k) instead of [k][n]. Reinterpreted
+   column-major that buffer is B_original(k,n) directly (not B^T like the NN
+   case), so the swapped operand needs OP_T (with lda = k) to land back on
+   the B'(n,k) shape the rest of the formula expects. Uses a separate cache
+   (have_tuned_nt etc.) since NT is a different kernel population. */
 int gemm_impl(amarbaro_ctx *ctx, int m, int n, int k, const void *a, const void *b,
-              void *c, float alpha, float beta, hipDataType dt) {
+              void *c, float alpha, float beta, hipDataType dt, bool nt) {
   if (!ctx || !a || !b || !c) {
     set_error("null argument");
     return -1;
   }
 
-  hipblaslt_ext::Gemm gemm(ctx->lt, HIPBLAS_OP_N, HIPBLAS_OP_N, dt, dt, dt, dt,
+  bool &have_tuned = nt ? ctx->have_tuned_nt : ctx->have_tuned;
+  int &cached_m = nt ? ctx->cached_m_nt : ctx->cached_m;
+  int &cached_n = nt ? ctx->cached_n_nt : ctx->cached_n;
+  int &cached_k = nt ? ctx->cached_k_nt : ctx->cached_k;
+  hipDataType &cached_dt = nt ? ctx->cached_dt_nt : ctx->cached_dt;
+  hipblasLtMatmulAlgo_t &algo = nt ? ctx->algo_nt : ctx->algo;
+  int &best_splitk = nt ? ctx->best_splitk_nt : ctx->best_splitk;
+  int &best_wgm = nt ? ctx->best_wgm_nt : ctx->best_wgm;
+  int &n_algos = nt ? ctx->n_algos_nt : ctx->n_algos;
+  int &chosen_algo = nt ? ctx->chosen_algo_nt : ctx->chosen_algo;
+
+  hipblaslt_ext::Gemm gemm(ctx->lt, nt ? HIPBLAS_OP_T : HIPBLAS_OP_N,
+                           HIPBLAS_OP_N, dt, dt, dt, dt,
                            HIPBLAS_COMPUTE_32F);
   hipblaslt_ext::GemmEpilogue epilogue;
   hipblaslt_ext::GemmInputs inputs;
@@ -127,15 +154,23 @@ int gemm_impl(amarbaro_ctx *ctx, int m, int n, int k, const void *a, const void 
   inputs.setAlpha(&alpha);
   inputs.setBeta(&beta);
 
-  if (gemm.setProblem(n, m, k, 1, epilogue, inputs) !=
-      HIPBLAS_STATUS_SUCCESS) {
+  hipblasStatus_t problem_status;
+  if (nt) {
+    hipblaslt_ext::GemmProblemType ptype(HIPBLAS_OP_T, HIPBLAS_OP_N, dt, dt,
+                                         dt, dt, HIPBLAS_COMPUTE_32F);
+    problem_status = gemm.setProblem(n, m, k, 1, k, k, n, n, 0, 0, 0, 0,
+                                     epilogue, inputs, ptype);
+  } else {
+    problem_status = gemm.setProblem(n, m, k, 1, epilogue, inputs);
+  }
+  if (problem_status != HIPBLAS_STATUS_SUCCESS) {
     set_error("ext setProblem failed");
     return -1;
   }
 
-  const bool shape_changed = !ctx->have_tuned || ctx->cached_m != m ||
-                             ctx->cached_n != n || ctx->cached_k != k ||
-                             ctx->cached_dt != dt;
+  const bool shape_changed = !have_tuned || cached_m != m ||
+                             cached_n != n || cached_k != k ||
+                             cached_dt != dt;
 
   if (shape_changed) {
     /* Search needs headroom for candidates that stage partial sums. */
@@ -165,7 +200,7 @@ int gemm_impl(amarbaro_ctx *ctx, int m, int n, int k, const void *a, const void 
     }
 
     float best_ms = -1.0f;
-    int best_algo = -1, best_sk = 0, best_wgm = 0;
+    int best_algo = -1, best_sk = 0, best_wg_local = 0;
     size_t best_need = 0;
 
     for (size_t i = 0; i < cand.size(); ++i) {
@@ -198,7 +233,7 @@ int gemm_impl(amarbaro_ctx *ctx, int m, int n, int k, const void *a, const void 
             best_ms = ms;
             best_algo = static_cast<int>(i);
             best_sk = sk;
-            best_wgm = wg;
+            best_wg_local = wg;
             best_need = need;
           }
         }
@@ -216,23 +251,23 @@ int gemm_impl(amarbaro_ctx *ctx, int m, int n, int k, const void *a, const void 
     if (!ensure_workspace(ctx, best_need))
       return -1;
 
-    ctx->algo = cand[best_algo].algo;
-    ctx->best_splitk = best_sk;
-    ctx->best_wgm = best_wgm;
-    ctx->n_algos = static_cast<int>(cand.size());
-    ctx->chosen_algo = best_algo;
-    ctx->cached_m = m;
-    ctx->cached_n = n;
-    ctx->cached_k = k;
-    ctx->cached_dt = dt;
-    ctx->have_tuned = true;
-    ctx->have_algo = true;
+    algo = cand[best_algo].algo;
+    best_splitk = best_sk;
+    best_wgm = best_wg_local;
+    n_algos = static_cast<int>(cand.size());
+    chosen_algo = best_algo;
+    cached_m = m;
+    cached_n = n;
+    cached_k = k;
+    cached_dt = dt;
+    have_tuned = true;
+    if (nt) ctx->have_algo_nt = true; else ctx->have_algo = true;
   }
 
   hipblaslt_ext::GemmTuning tuning;
-  tuning.setSplitK(static_cast<uint16_t>(ctx->best_splitk));
-  tuning.setWgm(static_cast<int16_t>(ctx->best_wgm));
-  if (gemm.initialize(ctx->algo, tuning, ctx->workspace, true, ctx->stream) !=
+  tuning.setSplitK(static_cast<uint16_t>(best_splitk));
+  tuning.setWgm(static_cast<int16_t>(best_wgm));
+  if (gemm.initialize(algo, tuning, ctx->workspace, true, ctx->stream) !=
       HIPBLAS_STATUS_SUCCESS) {
     set_error("ext initialize failed");
     return -1;
@@ -248,12 +283,17 @@ int gemm_impl(amarbaro_ctx *ctx, int m, int n, int k, const void *a, const void 
 
 extern "C" int amarbaro_gemm_f16(amarbaro_ctx *ctx, int m, int n, int k, const void *a,
                              const void *b, void *c, float alpha, float beta) {
-  return gemm_impl(ctx, m, n, k, a, b, c, alpha, beta, HIP_R_16F);
+  return gemm_impl(ctx, m, n, k, a, b, c, alpha, beta, HIP_R_16F, false);
 }
 
 extern "C" int amarbaro_gemm_f32(amarbaro_ctx *ctx, int m, int n, int k, const void *a,
                              const void *b, void *c, float alpha, float beta) {
-  return gemm_impl(ctx, m, n, k, a, b, c, alpha, beta, HIP_R_32F);
+  return gemm_impl(ctx, m, n, k, a, b, c, alpha, beta, HIP_R_32F, false);
+}
+
+extern "C" int amarbaro_gemm_f16_nt(amarbaro_ctx *ctx, int m, int n, int k, const void *a,
+                                const void *b, void *c, float alpha, float beta) {
+  return gemm_impl(ctx, m, n, k, a, b, c, alpha, beta, HIP_R_16F, true);
 }
 
 extern "C" void *amarbaro_device_alloc(size_t bytes) {

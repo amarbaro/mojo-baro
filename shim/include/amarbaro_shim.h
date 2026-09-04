@@ -21,6 +21,12 @@ int amarbaro_gemm_f16(amarbaro_ctx *ctx, int m, int n, int k, const void *a,
 int amarbaro_gemm_f32(amarbaro_ctx *ctx, int m, int n, int k, const void *a,
                       const void *b, void *c, float alpha, float beta);
 
+/* Same as amarbaro_gemm_f16, but b is [n][k] row-major (ldb = k) instead of
+   [k][n]; opB = HIPBLAS_OP_T. Its own cached algo/splitK/wgm search, keyed
+   separately from the NN entry. */
+int amarbaro_gemm_f16_nt(amarbaro_ctx *ctx, int m, int n, int k, const void *a,
+                         const void *b, void *c, float alpha, float beta);
+
 /* Device memory. amarbaro_upload/amarbaro_download are synchronous on ctx's stream. */
 void *amarbaro_device_alloc(size_t bytes);
 void amarbaro_device_free(void *ptr);
