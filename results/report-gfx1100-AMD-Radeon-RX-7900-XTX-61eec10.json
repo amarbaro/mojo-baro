@@ -1,0 +1,680 @@
+{
+  "schema": "mojo-baro/fp16-gemm-report/1",
+  "commit": "61eec10",
+  "dirty": "",
+  "mojo": "Mojo 1.0.0 (ed45d567)",
+  "env": {
+    "gpu": "AMD Radeon RX 7900 XTX",
+    "gfx": "gfx1100",
+    "compute_units": 96,
+    "wavefront": 32,
+    "max_clock_mhz": 2371,
+    "gpu_count": 1,
+    "rocm": "7.2.4",
+    "hipblaslt": "libhipblaslt.so.1.2",
+    "state": {
+      "temp_c": 44.0,
+      "sclk_mhz": 30,
+      "power_w": 15.0
+    }
+  },
+  "state_after": {
+    "temp_c": 56.0,
+    "sclk_mhz": 29,
+    "power_w": 48.0
+  },
+  "valid": true,
+  "problems": [],
+  "sizes": [
+    {
+      "size": 256,
+      "ours_gflops": 6444.31102993568,
+      "hipblaslt_gflops": 6230.0684102984005,
+      "ratio": 1.034388485892568,
+      "ours": {
+        "variant": "wmma_pipe_fp16",
+        "m": 256,
+        "n": 256,
+        "k": 256,
+        "ms": 0.00520683,
+        "gflops": 6444.31102993568,
+        "correct": true,
+        "max_err": 1.6689300537109375e-06,
+        "iters": 200,
+        "warmup_s": 10.0,
+        "pgr": 2,
+        "lb": 0,
+        "abl": 0,
+        "prio": 0,
+        "tb": 0,
+        "hoist": 0,
+        "sgb": 0,
+        "tile": 16,
+        "dtype": "float16",
+        "blk": [
+          64,
+          64,
+          32
+        ],
+        "warps": [
+          2,
+          2
+        ],
+        "wtile": [
+          2,
+          2
+        ],
+        "grid": [
+          4,
+          4
+        ],
+        "block": 128
+      },
+      "hipblaslt": {
+        "variant": "hipblaslt_fp16",
+        "m": 256,
+        "n": 256,
+        "k": 256,
+        "ms": 0.005385885,
+        "gflops": 6230.0684102984005,
+        "correct": true,
+        "max_err": 0.0,
+        "algo_count": 32,
+        "algo_chosen": 25,
+        "splitk": 0,
+        "wgm": 1,
+        "iters": 200,
+        "warmup_s": 10.0,
+        "opb": 0,
+        "dtype": "float16",
+        "c_dtype": "float16",
+        "gate": "err<=1.0: fp16 C, |sum|<=4096 has ulp 2"
+      }
+    },
+    {
+      "size": 512,
+      "ours_gflops": 31807.39116086975,
+      "hipblaslt_gflops": 26107.281111727614,
+      "ratio": 1.2183341124166926,
+      "ours": {
+        "variant": "wmma_pipe_fp16",
+        "m": 512,
+        "n": 512,
+        "k": 512,
+        "ms": 0.008439405,
+        "gflops": 31807.39116086975,
+        "correct": true,
+        "max_err": 1.4185905456542969e-05,
+        "iters": 200,
+        "warmup_s": 10.0,
+        "pgr": 2,
+        "lb": 0,
+        "abl": 0,
+        "prio": 0,
+        "tb": 0,
+        "hoist": 0,
+        "sgb": 0,
+        "tile": 16,
+        "dtype": "float16",
+        "blk": [
+          64,
+          64,
+          32
+        ],
+        "warps": [
+          2,
+          2
+        ],
+        "wtile": [
+          2,
+          2
+        ],
+        "grid": [
+          8,
+          8
+        ],
+        "block": 128
+      },
+      "hipblaslt": {
+        "variant": "hipblaslt_fp16",
+        "m": 512,
+        "n": 512,
+        "k": 512,
+        "ms": 0.010282015,
+        "gflops": 26107.281111727614,
+        "correct": true,
+        "max_err": 0.0,
+        "algo_count": 32,
+        "algo_chosen": 21,
+        "splitk": 1,
+        "wgm": 1,
+        "iters": 200,
+        "warmup_s": 10.0,
+        "opb": 0,
+        "dtype": "float16",
+        "c_dtype": "float16",
+        "gate": "err<=1.0: fp16 C, |sum|<=4096 has ulp 2"
+      }
+    },
+    {
+      "size": 768,
+      "ours_gflops": 64239.340255484014,
+      "hipblaslt_gflops": 54931.38888299404,
+      "ratio": 1.1694468601971137,
+      "ours": {
+        "variant": "wmma_pipe_fp16",
+        "m": 768,
+        "n": 768,
+        "k": 768,
+        "ms": 0.014103035,
+        "gflops": 64239.340255484014,
+        "correct": true,
+        "max_err": 2.09808349609375e-05,
+        "iters": 200,
+        "warmup_s": 10.0,
+        "pgr": 2,
+        "lb": 0,
+        "abl": 0,
+        "prio": 0,
+        "tb": 0,
+        "hoist": 0,
+        "sgb": 0,
+        "tile": 16,
+        "dtype": "float16",
+        "blk": [
+          64,
+          64,
+          32
+        ],
+        "warps": [
+          2,
+          2
+        ],
+        "wtile": [
+          2,
+          2
+        ],
+        "grid": [
+          12,
+          12
+        ],
+        "block": 128
+      },
+      "hipblaslt": {
+        "variant": "hipblaslt_fp16",
+        "m": 768,
+        "n": 768,
+        "k": 768,
+        "ms": 0.01649275,
+        "gflops": 54931.38888299404,
+        "correct": true,
+        "max_err": 1.537799835205078e-05,
+        "algo_count": 32,
+        "algo_chosen": 21,
+        "splitk": 1,
+        "wgm": 1,
+        "iters": 200,
+        "warmup_s": 10.0,
+        "opb": 0,
+        "dtype": "float16",
+        "c_dtype": "float16",
+        "gate": "err<=1.0: fp16 C, |sum|<=4096 has ulp 2"
+      }
+    },
+    {
+      "size": 1024,
+      "ours_gflops": 75141.81785099763,
+      "hipblaslt_gflops": 64461.607094883104,
+      "ratio": 1.1656832840111166,
+      "ours": {
+        "variant": "wmma_pipe_fp16",
+        "m": 1024,
+        "n": 1024,
+        "k": 1024,
+        "ms": 0.028579075,
+        "gflops": 75141.81785099763,
+        "correct": true,
+        "max_err": 0.0,
+        "iters": 200,
+        "warmup_s": 10.0,
+        "pgr": 2,
+        "lb": 0,
+        "abl": 0,
+        "prio": 0,
+        "tb": 0,
+        "hoist": 0,
+        "sgb": 0,
+        "tile": 16,
+        "dtype": "float16",
+        "blk": [
+          64,
+          128,
+          32
+        ],
+        "warps": [
+          2,
+          4
+        ],
+        "wtile": [
+          2,
+          2
+        ],
+        "grid": [
+          8,
+          16
+        ],
+        "block": 256
+      },
+      "hipblaslt": {
+        "variant": "hipblaslt_fp16",
+        "m": 1024,
+        "n": 1024,
+        "k": 1024,
+        "ms": 0.03331415,
+        "gflops": 64461.607094883104,
+        "correct": true,
+        "max_err": 0.0,
+        "algo_count": 32,
+        "algo_chosen": 13,
+        "splitk": 1,
+        "wgm": 1,
+        "iters": 200,
+        "warmup_s": 10.0,
+        "opb": 0,
+        "dtype": "float16",
+        "c_dtype": "float16",
+        "gate": "err<=1.0: fp16 C, |sum|<=4096 has ulp 2"
+      }
+    },
+    {
+      "size": 1536,
+      "ours_gflops": 93840.05524940566,
+      "hipblaslt_gflops": 68066.71712049363,
+      "ratio": 1.3786481737217815,
+      "ours": {
+        "variant": "wmma_pipe_fp16",
+        "m": 1536,
+        "n": 1536,
+        "k": 1536,
+        "ms": 0.07723522,
+        "gflops": 93840.05524940566,
+        "correct": true,
+        "max_err": 0.0,
+        "iters": 200,
+        "warmup_s": 10.0,
+        "pgr": 2,
+        "lb": 0,
+        "abl": 0,
+        "prio": 0,
+        "tb": 0,
+        "hoist": 0,
+        "sgb": 0,
+        "tile": 16,
+        "dtype": "float16",
+        "blk": [
+          128,
+          128,
+          32
+        ],
+        "warps": [
+          4,
+          2
+        ],
+        "wtile": [
+          2,
+          4
+        ],
+        "grid": [
+          12,
+          12
+        ],
+        "block": 256
+      },
+      "hipblaslt": {
+        "variant": "hipblaslt_fp16",
+        "m": 1536,
+        "n": 1536,
+        "k": 1536,
+        "ms": 0.106480195,
+        "gflops": 68066.71712049363,
+        "correct": true,
+        "max_err": 3.063678741455078e-05,
+        "algo_count": 32,
+        "algo_chosen": 13,
+        "splitk": 1,
+        "wgm": 2,
+        "iters": 200,
+        "warmup_s": 10.0,
+        "opb": 0,
+        "dtype": "float16",
+        "c_dtype": "float16",
+        "gate": "err<=1.0: fp16 C, |sum|<=4096 has ulp 2"
+      }
+    },
+    {
+      "size": 2048,
+      "ours_gflops": 93180.35900366007,
+      "hipblaslt_gflops": 81955.12638347139,
+      "ratio": 1.1369680350154712,
+      "ours": {
+        "variant": "wmma_pipe_fp16",
+        "m": 2048,
+        "n": 2048,
+        "k": 2048,
+        "ms": 0.184372215,
+        "gflops": 93180.35900366007,
+        "correct": true,
+        "max_err": 4.76837158203125e-07,
+        "iters": 200,
+        "warmup_s": 10.0,
+        "pgr": 2,
+        "lb": 0,
+        "abl": 0,
+        "prio": 0,
+        "tb": 0,
+        "hoist": 0,
+        "sgb": 0,
+        "tile": 16,
+        "dtype": "float16",
+        "blk": [
+          128,
+          128,
+          32
+        ],
+        "warps": [
+          4,
+          2
+        ],
+        "wtile": [
+          2,
+          4
+        ],
+        "grid": [
+          16,
+          16
+        ],
+        "block": 256
+      },
+      "hipblaslt": {
+        "variant": "hipblaslt_fp16",
+        "m": 2048,
+        "n": 2048,
+        "k": 2048,
+        "ms": 0.209625315,
+        "gflops": 81955.12638347139,
+        "correct": true,
+        "max_err": 0.0,
+        "algo_count": 32,
+        "algo_chosen": 10,
+        "splitk": 1,
+        "wgm": 1,
+        "iters": 200,
+        "warmup_s": 10.0,
+        "opb": 0,
+        "dtype": "float16",
+        "c_dtype": "float16",
+        "gate": "err<=1.0: fp16 C, |sum|<=4096 has ulp 2"
+      }
+    },
+    {
+      "size": 2560,
+      "ours_gflops": 98333.07307572171,
+      "hipblaslt_gflops": 83982.9606438247,
+      "ratio": 1.1708693325632618,
+      "ours": {
+        "variant": "wmma_pipe_fp16",
+        "m": 2560,
+        "n": 2560,
+        "k": 2560,
+        "ms": 0.341232415,
+        "gflops": 98333.07307572171,
+        "correct": true,
+        "max_err": 9.5367431640625e-07,
+        "iters": 200,
+        "warmup_s": 10.0,
+        "pgr": 2,
+        "lb": 0,
+        "abl": 0,
+        "prio": 0,
+        "tb": 0,
+        "hoist": 0,
+        "sgb": 0,
+        "tile": 16,
+        "dtype": "float16",
+        "blk": [
+          128,
+          128,
+          32
+        ],
+        "warps": [
+          4,
+          2
+        ],
+        "wtile": [
+          2,
+          4
+        ],
+        "grid": [
+          20,
+          20
+        ],
+        "block": 256
+      },
+      "hipblaslt": {
+        "variant": "hipblaslt_fp16",
+        "m": 2560,
+        "n": 2560,
+        "k": 2560,
+        "ms": 0.39953857,
+        "gflops": 83982.9606438247,
+        "correct": true,
+        "max_err": 0.0,
+        "algo_count": 32,
+        "algo_chosen": 0,
+        "splitk": 1,
+        "wgm": 16,
+        "iters": 200,
+        "warmup_s": 10.0,
+        "opb": 0,
+        "dtype": "float16",
+        "c_dtype": "float16",
+        "gate": "err<=1.0: fp16 C, |sum|<=4096 has ulp 2"
+      }
+    },
+    {
+      "size": 3072,
+      "ours_gflops": 100248.26730315428,
+      "hipblaslt_gflops": 98206.07680778914,
+      "ratio": 1.020794950391534,
+      "ours": {
+        "variant": "wmma_pipe_fp16",
+        "m": 3072,
+        "n": 3072,
+        "k": 3072,
+        "ms": 0.578384645,
+        "gflops": 100248.26730315428,
+        "correct": true,
+        "max_err": 0.0,
+        "iters": 200,
+        "warmup_s": 10.0,
+        "pgr": 2,
+        "lb": 0,
+        "abl": 0,
+        "prio": 0,
+        "tb": 0,
+        "hoist": 0,
+        "sgb": 0,
+        "tile": 16,
+        "dtype": "float16",
+        "blk": [
+          128,
+          128,
+          32
+        ],
+        "warps": [
+          4,
+          2
+        ],
+        "wtile": [
+          2,
+          4
+        ],
+        "grid": [
+          24,
+          24
+        ],
+        "block": 256
+      },
+      "hipblaslt": {
+        "variant": "hipblaslt_fp16",
+        "m": 3072,
+        "n": 3072,
+        "k": 3072,
+        "ms": 0.590412125,
+        "gflops": 98206.07680778914,
+        "correct": true,
+        "max_err": 6.115436553955078e-05,
+        "algo_count": 32,
+        "algo_chosen": 0,
+        "splitk": 1,
+        "wgm": 1,
+        "iters": 200,
+        "warmup_s": 10.0,
+        "opb": 0,
+        "dtype": "float16",
+        "c_dtype": "float16",
+        "gate": "err<=1.0: fp16 C, |sum|<=4096 has ulp 2"
+      }
+    },
+    {
+      "size": 3584,
+      "ours_gflops": 106094.53996381372,
+      "hipblaslt_gflops": 85026.91719648405,
+      "ratio": 1.247775921578406,
+      "ours": {
+        "variant": "wmma_pipe_fp16",
+        "m": 3584,
+        "n": 3584,
+        "k": 3584,
+        "ms": 0.8678426,
+        "gflops": 106094.53996381372,
+        "correct": true,
+        "max_err": 0.0,
+        "iters": 200,
+        "warmup_s": 10.0,
+        "pgr": 2,
+        "lb": 0,
+        "abl": 0,
+        "prio": 0,
+        "tb": 0,
+        "hoist": 0,
+        "sgb": 0,
+        "tile": 16,
+        "dtype": "float16",
+        "blk": [
+          128,
+          128,
+          32
+        ],
+        "warps": [
+          4,
+          2
+        ],
+        "wtile": [
+          2,
+          4
+        ],
+        "grid": [
+          28,
+          28
+        ],
+        "block": 256
+      },
+      "hipblaslt": {
+        "variant": "hipblaslt_fp16",
+        "m": 3584,
+        "n": 3584,
+        "k": 3584,
+        "ms": 1.0828731,
+        "gflops": 85026.91719648405,
+        "correct": true,
+        "max_err": 1.0,
+        "algo_count": 32,
+        "algo_chosen": 0,
+        "splitk": 0,
+        "wgm": 8,
+        "iters": 200,
+        "warmup_s": 10.0,
+        "opb": 0,
+        "dtype": "float16",
+        "c_dtype": "float16",
+        "gate": "err<=1.0: fp16 C, |sum|<=4096 has ulp 2"
+      }
+    },
+    {
+      "size": 4096,
+      "ours_gflops": 89483.83368186923,
+      "hipblaslt_gflops": 82405.3468526458,
+      "ratio": 1.0858983925142736,
+      "ours": {
+        "variant": "wmma_pipe_fp16",
+        "m": 4096,
+        "n": 4096,
+        "k": 4096,
+        "ms": 1.5359081950000002,
+        "gflops": 89483.83368186923,
+        "correct": true,
+        "max_err": 0.0002231597900390625,
+        "iters": 200,
+        "warmup_s": 10.0,
+        "pgr": 2,
+        "lb": 0,
+        "abl": 0,
+        "prio": 0,
+        "tb": 0,
+        "hoist": 0,
+        "sgb": 0,
+        "tile": 16,
+        "dtype": "float16",
+        "blk": [
+          128,
+          128,
+          32
+        ],
+        "warps": [
+          4,
+          2
+        ],
+        "wtile": [
+          2,
+          4
+        ],
+        "grid": [
+          32,
+          32
+        ],
+        "block": 256
+      },
+      "hipblaslt": {
+        "variant": "hipblaslt_fp16",
+        "m": 4096,
+        "n": 4096,
+        "k": 4096,
+        "ms": 1.6678402399999999,
+        "gflops": 82405.3468526458,
+        "correct": true,
+        "max_err": 1.0,
+        "algo_count": 32,
+        "algo_chosen": 0,
+        "splitk": 1,
+        "wgm": 8,
+        "iters": 200,
+        "warmup_s": 10.0,
+        "opb": 0,
+        "dtype": "float16",
+        "c_dtype": "float16",
+        "gate": "err<=1.0: fp16 C, |sum|<=4096 has ulp 2"
+      }
+    }
+  ]
+}
