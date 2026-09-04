@@ -283,3 +283,18 @@ reached by fewer instructions per FLOP (which lifts the clock), not by more
 overlap. Open: the 4096^3 number of record spans 90.7k-98.0k across runs
 (templates table vs race median); the clock spread seen here is the likely
 cause and has not been separated from thermal order.
+
+### Round 6 (2026-09-04): frozen BEFORE running -- spread receipt and WMMA-only roofline
+
+Predictions frozen against plan `luminous-growing-kitten` (2026-09-02) and
+commit 9ac5f3a/73adaba (tooling only, kernel untouched). Power cap read back:
+`power1_cap` 290 W (LACT). Fail rules stated per row.
+
+| step | arm(s) | prediction | fail rule |
+|---|---|---|---|
+| 0.2 spread | `PROBE=1 race-fp16.sh 5 vendor=.work/fp16_lt_4096 ours=.work/fp16_clockprobe_4096` | ours median 92-98k GFLOP/s; sample gflops tracks sclk_med (r > 0.8); vendor-first order moves ours <= 2% | r < 0.5 -> clock is not the spread's cause, look at thermal order instead |
+| 0.3 roofline R | `.work/wmma_peak_n8` / `_n2` under probe, 3 samples each | n8: 480-512 FLOP/clk/CU, sclk 2.4-2.7 GHz, R ~ 120-130 TFLOP/s; n2 <= 60% of n8 | n8 >= 900 FLOP/clk/CU -> peak is 1024/clk/CU not 512: STOP, re-plan (stop rule a) |
+
+Every fp16 number from here is quoted as a fraction of R with sclk_med and
+FLOP/clk/CU beside it; target for the levers of Phase 1-3 is >= 0.90 R at
+2048^3/3072^3/4096^3.
