@@ -347,10 +347,10 @@ def main() raises:
     var curb_d = ctx.enqueue_create_buffer[bf16](MROWS * H)
     var qkv_d = ctx.enqueue_create_buffer[f32](MROWS * CONV)
     var z_d = ctx.enqueue_create_buffer[f32](MROWS * H)
-    var eg_d = ctx.enqueue_create_buffer[f32](NH_V)
-    var beta_d = ctx.enqueue_create_buffer[f32](NH_V)
-    var conv_d = ctx.enqueue_create_buffer[f32](CONV)
-    var so_d = ctx.enqueue_create_buffer[f32](NH_V * SSTATE)
+    var eg_d = ctx.enqueue_create_buffer[f32](MROWS * NH_V)
+    var beta_d = ctx.enqueue_create_buffer[f32](MROWS * NH_V)
+    var conv_d = ctx.enqueue_create_buffer[f32](MROWS * CONV)
+    var so_d = ctx.enqueue_create_buffer[f32](MROWS * NH_V * SSTATE)
     var resb_d = ctx.enqueue_create_buffer[bf16](MROWS * H)
     var qf_d = ctx.enqueue_create_buffer[f32](MROWS * QF)
     var q_d = ctx.enqueue_create_buffer[f32](MROWS * NQH * HD)
@@ -390,6 +390,8 @@ def main() raises:
     ctx.enqueue_memset(kc32_d, 0)
     ctx.enqueue_memset(vc32_d, 0)
     ctx.synchronize()
+    var ConvStateAll = TileTensor(convstate_d, csall_layout)
+    var SStateAll = TileTensor(sstate_d, ssall_layout)
 
     # --- kernel bindings -----------------------------------------------------
 
@@ -570,10 +572,10 @@ def main() raises:
                 var Pab2 = TileTensor(p_32b_d, p_32)
                 var Qkvm = TileTensor(qkv_d, qfm_layout)
                 var Zm = TileTensor(z_d, xm_layout)
-                var Eg = TileTensor(eg_d, g32_layout)
-                var Beta = TileTensor(beta_d, g32_layout)
-                var Conv = TileTensor(conv_d, conv_layout)
-                var So = TileTensor(so_d, o_layout)
+                var Eg = TileTensor(eg_d, g32m_layout)
+                var Beta = TileTensor(beta_d, g32m_layout)
+                var Conv = TileTensor(conv_d, convm_layout)
+                var So = TileTensor(so_d, om_layout)
                 var ResBm = TileTensor(resb_d, xm_layout)
 
                 gemm_q8(ctx, CurBm, Wqkvq, Wqkvs, Pq, m, CONV, H)
@@ -583,68 +585,36 @@ def main() raises:
                 ctx.enqueue_function[r_qf](Pq, Qkvm, Int32(m), Int32(CONV), grid_dim=ceildiv(m * CONV, 256), block_dim=256)
                 ctx.enqueue_function[r_h](Ph, Zm, Int32(m), Int32(H), grid_dim=ceildiv(m * H, 256), block_dim=256)
 
-                for r in range(m):
-                    var rs = (ring + r) % SLOTS
-                    var ws = (ring + r + 1) % SLOTS
-                    var csb = DeviceBuffer[f32](
-                        ctx,
-                        convstate_d.unsafe_ptr() + rs * CONV_SLOT + ssm_i * 3 * CONV,
-                        3 * CONV, owning=False,
-                    )
-                    var csb_w = DeviceBuffer[f32](
-                        ctx,
-                        convstate_d.unsafe_ptr() + ws * CONV_SLOT + ssm_i * 3 * CONV,
-                        3 * CONV, owning=False,
-                    )
-                    var s0b = DeviceBuffer[f32](
-                        ctx,
-                        sstate_d.unsafe_ptr() + rs * SSM_SLOT
-                        + ssm_i * NH_V * SSTATE * SSTATE,
-                        NH_V * SSTATE * SSTATE, owning=False,
-                    )
-                    var s0b_w = DeviceBuffer[f32](
-                        ctx,
-                        sstate_d.unsafe_ptr() + ws * SSM_SLOT
-                        + ssm_i * NH_V * SSTATE * SSTATE,
-                        NH_V * SSTATE * SSTATE, owning=False,
-                    )
-                    var Cs = TileTensor(csb, cs_layout)
-                    var Cs_w = TileTensor(csb_w, cs_layout)
-                    var S0 = TileTensor(s0b, s_layout)
-                    var S0_w = TileTensor(s0b_w, s_layout)
-                    var Qkv1 = row_f32(ctx, qkv_d, r * CONV, CONV, conv_layout)
-                    var Z1 = row_f32(ctx, z_d, r * H, H, h_layout)
-                    var ResB1 = row_bf16(ctx, resb_d, r * H, H, h_layout)
-                    if pf2:
-                        ctx.synchronize()
-                        var nw = perf_counter_ns()
-                        pc[0] += Int(nw - tq)
-                        tq = nw
-                    ctx.enqueue_function[rgates_k](Pab, Pab2, Eg, Beta, SsmA, DtB, Int32(r), grid_dim=1, block_dim=NH_V)
-                    if pf2:
-                        ctx.synchronize()
-                        var nw = perf_counter_ns()
-                        pc[1] += Int(nw - tq)
-                        tq = nw
-                    ctx.enqueue_function[conv_k](Qkv1, Cs, Cw, Conv, Cs_w, grid_dim=ceildiv(CONV, 256), block_dim=256)
-                    if pf2:
-                        ctx.synchronize()
-                        var nw = perf_counter_ns()
-                        pc[2] += Int(nw - tq)
-                        tq = nw
-                    ctx.enqueue_function[l2_k](Conv, grid_dim=NH_V, block_dim=SSTATE)
-                    if pf2:
-                        ctx.synchronize()
-                        var nw = perf_counter_ns()
-                        pc[3] += Int(nw - tq)
-                        tq = nw
-                    ctx.enqueue_function[delta_k](S0, S0_w, Conv, Eg, Beta, So, grid_dim=NH_V, block_dim=SSTATE)
-                    if pf2:
-                        ctx.synchronize()
-                        var nw = perf_counter_ns()
-                        pc[4] += Int(nw - tq)
-                        tq = nw
-                    ctx.enqueue_function[gated_k](So, Z1, Nw, ResB1, grid_dim=NH_V, block_dim=SSTATE)
+                if pf2:
+                    ctx.synchronize()
+                    var nw = perf_counter_ns()
+                    pc[0] += Int(nw - tq)
+                    tq = nw
+                ctx.enqueue_function[rgates_k](Pab, Pab2, Eg, Beta, SsmA, DtB, Int32(m), grid_dim=1, block_dim=NH_V)
+                if pf2:
+                    ctx.synchronize()
+                    var nw = perf_counter_ns()
+                    pc[1] += Int(nw - tq)
+                    tq = nw
+                ctx.enqueue_function[conv_k](Qkvm, ConvStateAll, Cw, Conv, Int32(ring), Int32(ssm_i), Int32(SLOTS), Int32(m), grid_dim=ceildiv(CONV, 256), block_dim=256)
+                if pf2:
+                    ctx.synchronize()
+                    var nw = perf_counter_ns()
+                    pc[2] += Int(nw - tq)
+                    tq = nw
+                ctx.enqueue_function[l2_k](Conv, Int32(m), grid_dim=NH_V, block_dim=SSTATE)
+                if pf2:
+                    ctx.synchronize()
+                    var nw = perf_counter_ns()
+                    pc[3] += Int(nw - tq)
+                    tq = nw
+                delta_dispatch(ctx, SStateAll, Conv, Eg, Beta, So, Int32(ring), Int32(ssm_i), Int32(SLOTS), m)
+                if pf2:
+                    ctx.synchronize()
+                    var nw = perf_counter_ns()
+                    pc[4] += Int(nw - tq)
+                    tq = nw
+                ctx.enqueue_function[gated_k](So, Zm, Nw, ResBm, Int32(m), grid_dim=NH_V, block_dim=SSTATE)
 
                 if pf2:
                     ctx.synchronize()
