@@ -347,3 +347,15 @@ spills 7 VGPR and abl3 spills 69 (abl0/abl1 spill 0), so t3 is an upper
 bound on the register-resident cost, not a clean number. Fail rule: if
 t0 - t2 > 0.15 ms the plan's ordering (diet before prefetch) is wrong and
 Phase 3 moves ahead of Phase 1.
+
+### Round 7 -- Phase 1 levers, frozen BEFORE building (2026-09-04)
+
+Baseline arm for every race below: `.work/fp16_abl0_4096` (= champion,
+89.5k resident-idle, 0.71 R). Each lever is a comptime knob echoed in the
+bench JSON; kept only on a disjoint-range win of the stated floor, at most
+two builds per lever.
+
+| lever | knob | prediction @4096^3 | keep floor | fail rule |
+|---|---|---|---|---|
+| 1.1 PRIO | `PRIO=1`: s_setprio 3 around the per-K-step mma block, 0 after | +0-3% | >= +1% disjoint | two builds < +1% -> rejected, knob stays only if zero-cost |
+| 1.3b NT B operand | `TB=1`: B given as [N][K], B loader becomes A's b128 path, vendor arm `amarbaro_gemm_f16_nt` (HIPBLAS_OP_T) | +4-8% vs abl0; >= +2% at every size >= 1536^3; NT vendor within 3% of NN vendor | >= +2% disjoint at 4096^3 and 2048^3 | ours NT < abl0 or vendor NT > +5% over vendor NN (then the vendor NT arm, not ours, is the story) |
