@@ -467,3 +467,21 @@ waves per CU and one-deep prefetch there is not enough latency hiding, and
 the two-deep variant that would fix it does not fit in 256 VGPR with a
 128x128 block. Lever 2.1 closed: the 4x4 tile is register-bound on
 gfx1100 at this block size. Not merged (branch kept for the record).
+
+**Round 7 result, lever 1.5 HOIST** (2026-09-04, commit 81a7b7e): the source
+hoist compiles to the same K-step, class (a) still 16/16, 188 VGPR. The
+backend re-materialises the lane math inside the loop. Fail rule fires:
+**rejected without a timed run**. Knob kept at 0 (byte-identical).
+
+**Round 7 result, lever 1.2 SGB, first race** (2026-09-04, commit 89290d4;
+receipt: K-step VGPR 188 -> 180, s_waitcnt 9 -> 11; mask names on this
+Mojo build are `ALL_VMEM`/`ALL_DS`/`MFMA`; `.work/r6/race-1.2-{4096,2048}.log`):
+
+| size | abl0 median (min-max, 5) | sgb1 median (min-max, 5) | delta | disjoint |
+|---|---|---|---|---|
+| 4096^3 | 89014 (88854-89310) | 89883 (88958-90594) | +0.98% | no |
+| 2048^3 | 91709 (91561-91943) | 92623 (92350-92768) | +1.00% | yes |
+
+Floor (>= +1% disjoint) met at 2048^3, not yet at 4096^3 (overlap of one
+sample). Same build, one confirmation race of 10 rounds at 4096^3 before
+adjudication; decision rule unchanged.
