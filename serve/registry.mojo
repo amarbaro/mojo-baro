@@ -63,6 +63,10 @@ comptime cw_layout = row_major[CONV, 4]()
 comptime s_layout = row_major[NH_V, SSTATE, SSTATE]()
 comptime o_layout = row_major[NH_V, SSTATE]()
 comptime g32_layout = row_major[NH_V]()
+comptime g32m_layout = row_major[MROWS, NH_V]()
+comptime om_layout = row_major[MROWS, NH_V, SSTATE]()
+comptime csall_layout = row_major[SLOTS, N_SSM, 3, CONV]()
+comptime ssall_layout = row_major[SLOTS, N_SSM, NH_V, SSTATE, SSTATE]()
 comptime n128_layout = row_major[SSTATE]()
 comptime emb_layout = row_major[VOCAB, H]()
 comptime vrow_layout = row_major[1, VOCAB]()
@@ -128,17 +132,14 @@ comptime r_add = amar_skinny_reduce_add[type_of(p_h), type_of(xm_layout), 1]
 comptime r_swiglu = amar_skinny_reduce_swiglu_bf16[type_of(p_ffn), type_of(ffnm_layout), 1]
 comptime r_head = amar_skinny_reduce[type_of(p_v), type_of(vm_layout), 1]
 comptime rgates_k = amar_ssm_reduce_gates[
-    type_of(p_32), type_of(g32_layout), type_of(g32_layout)
+    type_of(p_32), type_of(g32m_layout), type_of(g32_layout)
 ]
 comptime conv_k = amar_ssm_conv[
-    type_of(conv_layout), type_of(cs_layout), type_of(cw_layout), type_of(conv_layout)
+    type_of(qfm_layout), type_of(csall_layout), type_of(cw_layout), type_of(convm_layout)
 ]
-comptime l2_k = amar_ssm_qk_l2norm[type_of(conv_layout)]
-comptime delta_k = amar_ssm_delta_step[
-    type_of(s_layout), type_of(conv_layout), type_of(g32_layout), type_of(o_layout)
-]
+comptime l2_k = amar_ssm_qk_l2norm[type_of(convm_layout)]
 comptime gated_k = amar_ssm_gated_out_bf16[
-    type_of(o_layout), type_of(h_layout), type_of(n128_layout), type_of(h_layout)
+    type_of(om_layout), type_of(xm_layout), type_of(n128_layout), type_of(xm_layout)
 ]
 comptime split_k = amar_qgate_split[type_of(qfm_layout), type_of(qm_layout), type_of(xflat_layout)]
 comptime hrms_q = amar_head_rmsnorm[type_of(qm_layout), type_of(hd_layout)]
@@ -148,6 +149,45 @@ comptime rope_k = amar_rope_yarn[type_of(kvm_layout)]
 comptime append_k = amar_kv_append[type_of(cache_layout), type_of(kvm_layout)]
 comptime att_k = amar_attn_decode[type_of(qm_layout), type_of(cache_layout), type_of(qm_layout)]
 comptime gmul_k = amar_gate_mul_cast[type_of(xflat_layout), type_of(xflat_layout), type_of(xflat_layout)]
+
+
+def delta_dispatch(
+    ctx: DeviceContext,
+    SAll: TileTensor[f32, type_of(ssall_layout), MutAnyOrigin],
+    ConvOut: TileTensor[f32, type_of(convm_layout), MutAnyOrigin],
+    Eg: TileTensor[f32, type_of(g32m_layout), MutAnyOrigin],
+    Beta: TileTensor[f32, type_of(g32m_layout), MutAnyOrigin],
+    O: TileTensor[f32, type_of(om_layout), MutAnyOrigin],
+    ring: Int32, ssm_i: Int32, slots: Int32, m: Int,
+) raises:
+    comptime DL = type_of(ssall_layout)
+    comptime CL = type_of(convm_layout)
+    comptime GL = type_of(g32m_layout)
+    comptime OL = type_of(om_layout)
+    if m == 1:
+        ctx.enqueue_function[amar_ssm_delta_step[1, DL, CL, GL, OL]](
+            SAll, ConvOut, Eg, Beta, O, ring, ssm_i, slots, grid_dim=NH_V, block_dim=SSTATE)
+    elif m == 2:
+        ctx.enqueue_function[amar_ssm_delta_step[2, DL, CL, GL, OL]](
+            SAll, ConvOut, Eg, Beta, O, ring, ssm_i, slots, grid_dim=NH_V, block_dim=SSTATE)
+    elif m == 3:
+        ctx.enqueue_function[amar_ssm_delta_step[3, DL, CL, GL, OL]](
+            SAll, ConvOut, Eg, Beta, O, ring, ssm_i, slots, grid_dim=NH_V, block_dim=SSTATE)
+    elif m == 4:
+        ctx.enqueue_function[amar_ssm_delta_step[4, DL, CL, GL, OL]](
+            SAll, ConvOut, Eg, Beta, O, ring, ssm_i, slots, grid_dim=NH_V, block_dim=SSTATE)
+    elif m == 5:
+        ctx.enqueue_function[amar_ssm_delta_step[5, DL, CL, GL, OL]](
+            SAll, ConvOut, Eg, Beta, O, ring, ssm_i, slots, grid_dim=NH_V, block_dim=SSTATE)
+    elif m == 6:
+        ctx.enqueue_function[amar_ssm_delta_step[6, DL, CL, GL, OL]](
+            SAll, ConvOut, Eg, Beta, O, ring, ssm_i, slots, grid_dim=NH_V, block_dim=SSTATE)
+    elif m == 7:
+        ctx.enqueue_function[amar_ssm_delta_step[7, DL, CL, GL, OL]](
+            SAll, ConvOut, Eg, Beta, O, ring, ssm_i, slots, grid_dim=NH_V, block_dim=SSTATE)
+    else:
+        ctx.enqueue_function[amar_ssm_delta_step[SM, DL, CL, GL, OL]](
+            SAll, ConvOut, Eg, Beta, O, ring, ssm_i, slots, grid_dim=NH_V, block_dim=SSTATE)
 
 
 def gemm_q8[
