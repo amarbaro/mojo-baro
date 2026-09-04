@@ -125,6 +125,7 @@ def blk32_forward(
     mut logits_d: DeviceBuffer[f32], mut cc_d: DeviceBuffer[bf16], mut de_d: DeviceBuffer[f32],
     mut hd_d: DeviceBuffer[f32], mut kc32_d: DeviceBuffer[f32], mut vc32_d: DeviceBuffer[f32],
     mut toks_d: DeviceBuffer[DType.int32], mut dtok_d: DeviceBuffer[DType.int32],
+    prof3: Bool, mut p3: List[Int],
 ) raises:
     # blk.32 (NextN) draft head over m rows: row r is token Toks[tok_pos + r]
     # at sequence position pos + r, paired with hidden row r of hsrc
@@ -138,6 +139,10 @@ def blk32_forward(
     var CurBm = TileTensor(curb_d, xm_layout)
     var Logitsm = TileTensor(logits_d, vm_layout)
     var DeM = TileTensor(de_d, xm_layout)
+    var t3 = 0
+    if prof3:
+        ctx.synchronize()
+        t3 = perf_counter_ns()
     ctx.enqueue_function[embed_k](
         Embd, DeM, Toks, Int32(tok_pos), Int32(H),
         grid_dim=(ceildiv(H, 256), m), block_dim=256,
@@ -225,6 +230,11 @@ def blk32_forward(
     var SharedHeadNorm = tens_f32(ctx, wbuf, off[e + 14], H, h_layout)
     var HdM = TileTensor(hd_d, xm_layout)
     ctx.enqueue_function[rms_m](Xm, SharedHeadNorm, HdM, Int32(H), Float32(1e-6), grid_dim=m, block_dim=256)
+    if prof3:
+        ctx.synchronize()
+        var now3 = perf_counter_ns()
+        p3[0] += Int(now3 - t3)
+        t3 = now3
     if do_head:
         ctx.enqueue_function[rmsc_k](Xm, SharedHeadNorm, CurBm, Int32(H), Float32(1e-6), grid_dim=m, block_dim=256)
         var Wheadq = tens_q8q(ctx, wbuf, off[e - 1], H * VOCAB, q_h_v)
@@ -232,7 +242,15 @@ def blk32_forward(
         var Pv = TileTensor(p_v_d, p_v)
         gemm_q8(ctx, CurBm, Wheadq, Wheads, Pv, m, VOCAB, H)
         ctx.enqueue_function[r_head](Pv, Logitsm, Int32(m), Int32(VOCAB), grid_dim=ceildiv(m * VOCAB, 256), block_dim=256)
+        if prof3:
+            ctx.synchronize()
+            var now4 = perf_counter_ns()
+            p3[1] += Int(now4 - t3)
+            t3 = now4
         ctx.enqueue_function[argmax_d](Logitsm, Dtok, Int32(VOCAB), Int32(0), grid_dim=m, block_dim=256)
+        if prof3:
+            ctx.synchronize()
+            p3[2] += Int(perf_counter_ns() - t3)
 
 
 def main() raises:
@@ -428,6 +446,13 @@ def main() raises:
     # untouched.
     var prof = getenv("BARO_PROFILE", "0") != "0"
     var pf2 = getenv("BARO_PROFILE", "0") == "2"
+    # BARO_PROFILE=3: split the draft path (blk32_forward's process + k-1
+    # draft-step calls, plus the accept block) into layer body / head gemm+
+    # reduce / argmax / accept-sync buckets; "other" is the leftover
+    # tokcp/bookkeeping dispatch cost inside pf_proc+pf_draft.
+    var pf3 = getenv("BARO_PROFILE", "0") == "3"
+    var p3: List[Int] = [0, 0, 0, 0]
+    var n_spec_windows = 0
     var pc = [0, 0, 0, 0, 0, 0, 0, 0]
     var tq = t0
     var pf_att = 0
@@ -453,7 +478,8 @@ def main() raises:
             var hn_rows = DeviceBuffer[f32](ctx, hn_d.unsafe_ptr(), nproc * H, owning=False)
             blk32_forward(ctx, wbuf, off, e, nproc, pos_prev + 1, pos_prev + 1, True, hn_rows,
                 x_d, curb_d, qf_d, q_d, k_d, v_d, gate_d, ao_d, resb_d, fgb_d, p_qf_d, p_kv_d, p_h_d,
-                p_ffn_d, p_ffn2_d, p_v_d, logits_d, cc_d, de_d, hd_d, kc32_d, vc32_d, toks_d, dtok_d)
+                p_ffn_d, p_ffn2_d, p_v_d, logits_d, cc_d, de_d, hd_d, kc32_d, vc32_d, toks_d, dtok_d,
+                pf3, p3)
             var Dtok = TileTensor(dtok_d, dtok_layout)
             ctx.enqueue_function[tokcp_k](Dtok, Toks, Int32(nproc - 1), Int32(pos + 1), Int32(1), grid_dim=1, block_dim=32)
             m = min(kcfg + 1, n_total - 1 - pos)
@@ -466,11 +492,13 @@ def main() raises:
                 var hd_row = DeviceBuffer[f32](ctx, hd_d.unsafe_ptr() + hrow * H, H, owning=False)
                 blk32_forward(ctx, wbuf, off, e, 1, pos + j, pos + j, True, hd_row,
                     x_d, curb_d, qf_d, q_d, k_d, v_d, gate_d, ao_d, resb_d, fgb_d, p_qf_d, p_kv_d, p_h_d,
-                    p_ffn_d, p_ffn2_d, p_v_d, logits_d, cc_d, de_d, hd_d, kc32_d, vc32_d, toks_d, dtok_d)
+                    p_ffn_d, p_ffn2_d, p_v_d, logits_d, cc_d, de_d, hd_d, kc32_d, vc32_d, toks_d, dtok_d,
+                    pf3, p3)
                 ctx.enqueue_function[tokcp_k](Dtok, Toks, Int32(0), Int32(pos + j + 1), Int32(1), grid_dim=1, block_dim=32)
                 hrow = 0
             n_drafted += m - 1
             win_spec = True
+            n_spec_windows += 1
             if prof:
                 ctx.synchronize()
                 pf_draft += Int(perf_counter_ns() - tp)
@@ -717,6 +745,10 @@ def main() raises:
             if win_spec:
                 var Dtok = TileTensor(dtok_d, dtok_layout)
                 ctx.enqueue_function[argmax_d](Logitsm, Dtok, Int32(VOCAB), Int32(0), grid_dim=m, block_dim=256)
+                var t_acc = 0
+                if pf3:
+                    ctx.synchronize()
+                    t_acc = perf_counter_ns()
                 ctx.enqueue_copy(dst_buf=dtok_h, src_buf=DeviceBuffer[DType.int32](ctx, dtok_d.unsafe_ptr(), KMAX + 1, owning=False))
                 ctx.enqueue_copy(dst_buf=win_h, src_buf=DeviceBuffer[DType.int32](ctx, toks_d.unsafe_ptr() + pos + 1, KMAX + 1, owning=False))
                 ctx.synchronize()
@@ -730,6 +762,9 @@ def main() raises:
                         line += " " + String(win_h[i]) + "/" + String(dtok_h[i])
                     print(line)
                 ctx.enqueue_function[tokcp_k](Dtok, Toks, Int32(n_acc), Int32(pos + n_acc + 1), Int32(1), grid_dim=1, block_dim=32)
+                if pf3:
+                    ctx.synchronize()
+                    p3[3] += Int(perf_counter_ns() - t_acc)
                 m = n_acc + 1
             else:
                 ctx.enqueue_function[argmax_k](Logitsm, Toks, Int32(VOCAB), Int32(pos + 1), grid_dim=m, block_dim=256)
@@ -758,6 +793,20 @@ def main() raises:
         print("profile: ffn", Float64(pf_ffn) / 1e9, Float64(pf_ffn) / tot)
         print("profile: head", Float64(pf_head) / 1e9, Float64(pf_head) / tot)
         print("profile: mtp_proc", Float64(pf_proc) / 1e9, " mtp_draft", Float64(pf_draft) / 1e9)
+    if pf3:
+        var other = pf_proc + pf_draft - p3[0] - p3[1] - p3[2]
+        print(
+            "profile3: layer", Float64(p3[0]) / 1e9, " head", Float64(p3[1]) / 1e9,
+            " argmax", Float64(p3[2]) / 1e9, " accept", Float64(p3[3]) / 1e9,
+            " other", Float64(other) / 1e9,
+        )
+        if n_spec_windows > 0:
+            var nw = Float64(n_spec_windows)
+            print(
+                "profile3_per_window_ms: layer", Float64(p3[0]) / 1e6 / nw, " head", Float64(p3[1]) / 1e6 / nw,
+                " argmax", Float64(p3[2]) / 1e6 / nw, " accept", Float64(p3[3]) / 1e6 / nw,
+                " other", Float64(other) / 1e6 / nw,
+            )
     if pf2:
         var names = ["gemm4+reduce2", "rgates", "conv", "l2", "delta", "gated", "out_gemm+add", "-"]
         var st = Float64(pc[0] + pc[1] + pc[2] + pc[3] + pc[4] + pc[5] + pc[6])
@@ -790,7 +839,8 @@ def main() raises:
     var hn_last = DeviceBuffer[f32](ctx, hn_d.unsafe_ptr(), H, owning=False)
     blk32_forward(ctx, wbuf, off, e, 1, 0, n_total - 1, True, hn_last,
         x_d, curb_d, qf_d, q_d, k_d, v_d, gate_d, ao_d, resb_d, fgb_d, p_qf_d, p_kv_d, p_h_d,
-        p_ffn_d, p_ffn2_d, p_v_d, logits_d, cc_d, de_d, hd_d, kc32_d, vc32_d, toks_d, dtok_d)
+        p_ffn_d, p_ffn2_d, p_v_d, logits_d, cc_d, de_d, hd_d, kc32_d, vc32_d, toks_d, dtok_d,
+        False, p3)
     var last_tok = generated[len(generated) - 1]
     ctx.synchronize()
     var draft_logits_h = ctx.enqueue_create_host_buffer[f32](VOCAB)
