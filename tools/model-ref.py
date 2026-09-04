@@ -22,6 +22,7 @@ for line in (D / "index.txt").read_text().splitlines():
     name, dt, off, n = line.split()
     idx[name] = (dt, int(off), int(n))
 pack = np.memmap(D / "pack.bin", dtype=np.uint8, mode="r")
+_Q8_CACHE = {}
 
 
 def T(name, shape):
@@ -32,10 +33,16 @@ def T(name, shape):
     if dt == "q8":
         # int8 [out, in] + fp16 scales [out, in/32]; returned as the same
         # [in, out] f32 view the bf16 path gives (shape is (in, out)).
+        # Dequantized once and cached: ~37 GB f32 for the whole model, which
+        # turns a 3 min/token numpy decode into seconds/token.
+        if name in _Q8_CACHE:
+            return _Q8_CACHE[name]
         n_in, n_out = shape
         q = pack[off : off + n].view(np.int8).reshape(n_out, n_in // 32, 32)
         d = pack[off + n : off + n + (n // 32) * 2].view(np.float16).reshape(n_out, n_in // 32, 1)
-        return np.ascontiguousarray((q.astype(np.float32) * d.astype(np.float32)).reshape(n_out, n_in).T)
+        w = np.ascontiguousarray((q.astype(np.float32) * d.astype(np.float32)).reshape(n_out, n_in).T)
+        _Q8_CACHE[name] = w
+        return w
     return pack[off : off + n * 4].view(np.float32).reshape(shape).copy()
 
 

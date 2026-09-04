@@ -205,3 +205,12 @@ Ours / bar = 68.77 / 74.14 = **0.93x** (predicted 0.9-1.1x).
 Round summary: 41.7 -> 68.8 tok/s_gen (+65%) at 64/64; vs llama.cpp Q8_0
 0.93x, same ratio class as bf16 (0.94x). Remaining gap to the 93 tok/s q8
 roof: 26%, spread over the same non-GEMM kernels as before.
+
+### G1 receipt (2026-09-04): PASS, round closed
+
+`BARO_PACK=.work/engine-pack-q8 tools/model-ref.py decode 64` (numpy fp32,
+dequantized q8 weights cached once in RAM, 14 BLAS threads): 64 tokens,
+first divergence vs the bf16 reference: none. Tokens saved to
+`.work/engine-pack-q8/ref-tokens-64-numpy.txt`. All four sources agree on
+64/64: bf16 llama.cpp, Q8_0 llama.cpp, numpy-q8, engine-q8. The 68.77
+tok/s_gen figure is final.
