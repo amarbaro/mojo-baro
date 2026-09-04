@@ -53,4 +53,25 @@ layer (24 layers x 5 x (m-1) extra launches per window).
 
 ## Result
 
-Not yet run.
+### M0 (2026-09-04, lane B `4af9e5c`, driver re-run under gpu.lock)
+
+`flock .work/gpu.lock ./.work/bench_coldcache_mrow`, grid 1536 x 256,
+ROW_WAVES=8, UNROLL=4, ffn_gate N=12288 K=4096, ITERS=200, fp64 parity on
+every row: correct=true for all four arms.
+
+| MR | us | GB/s (weight bytes) | ratio to MR=1 |
+|---|---|---|---|
+| 1 | 88.3 | 605 | 1.00 |
+| 2 | 92.2 | 580 | 1.04 |
+| 4 | 112.9 | 473 | 1.28 |
+| 8 | 201.2 | 266 | 2.28 |
+
+**Frozen m=4 prediction 2.4-3.2x was wrong: measured 1.28x.** The 2.9x
+4-row prefill window and the 1.28x 2-row speculative window are therefore
+NOT the GEMM at m=2 (1.04x here). The A-traffic diagnosis is falsified for
+m <= 4; it holds only toward m=8. Lane A's LDS-staged q8mrow (`d7f765c`,
+branch `lane-mrow-kernel`): m=4 1.29x, m=8 2.08x, bit-identical outputs;
+no gain at the window sizes the engine uses, not wired into the engine.
+Stage M1 is re-scoped to an ablation (traffic vs ALU vs occupancy at m=4/8)
+before any second kernel attempt; M2 (SSM per-row fold) is now the lead
+lever for the 2-row window.
