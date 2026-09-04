@@ -293,7 +293,9 @@ def main() raises:
 
     # --- prompt --------------------------------------------------------------
     var prompt = List[Int]()
-    with open(packdir + "/prompt-tokens.txt", "r") as f:
+    var prompt_path = getenv("BARO_PROMPT", packdir + "/prompt-tokens.txt")
+    print("prompt file:", prompt_path)
+    with open(prompt_path, "r") as f:
         var data = f.read_bytes()
         var val = 0
         var have = False

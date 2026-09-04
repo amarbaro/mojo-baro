@@ -1,0 +1,2 @@
+Return a JSON object describing a book with fields title, author, year, and genres:
+{

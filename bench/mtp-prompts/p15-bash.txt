@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+# find the 5 largest files under the current directory

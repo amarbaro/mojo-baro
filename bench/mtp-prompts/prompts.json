@@ -1,0 +1,22 @@
+{
+ "p01-water": "Water boils at 100 degrees Celsius at sea level because",
+ "p02-python-fib": "def fibonacci(n):\n    \"\"\"Return the n-th Fibonacci number.\"\"\"\n",
+ "p03-story": "Once upon a time, in a small village by the sea, there lived an old fisherman who",
+ "p04-list-planets": "List the planets of the solar system in order from the sun:\n1.",
+ "p05-math": "Q: What is 17 times 23?\nA:",
+ "p06-translate": "Translate to German: \"The weather is nice today and we are going to the park.\"\nGerman:",
+ "p07-json": "Return a JSON object describing a book with fields title, author, year, and genres:\n{",
+ "p08-sql": "-- Table users(id, name, email, created_at)\n-- Query: the 10 most recently created users\nSELECT",
+ "p09-explain-gpu": "Explain in two sentences why GPU decode of a large language model is memory-bandwidth bound.",
+ "p10-recipe": "Recipe: simple tomato pasta sauce\nIngredients:\n-",
+ "p11-email": "Write a short polite email declining a meeting invitation for Thursday.\n\nSubject:",
+ "p12-rust": "// Rust: read a file into a String and count its lines\nfn count_lines(path: &str) -> std::io::Result<usize> {\n",
+ "p13-haiku": "Write a haiku about winter mornings.\n",
+ "p14-history": "The Roman Empire fell in the year",
+ "p15-bash": "#!/usr/bin/env bash\n# find the 5 largest files under the current directory\n",
+ "p16-chat": "User: I keep forgetting my passwords. What should I do?\nAssistant:",
+ "p17-summarize": "Summarize in one sentence: The mitochondrion is a double-membrane-bound organelle found in most eukaryotic organisms. Mitochondria generate most of the cell's supply of adenosine triphosphate, used as a source of chemical energy.\nSummary:",
+ "p18-regex": "A regular expression that matches a valid IPv4 address is",
+ "p19-numbers": "Continue the sequence: 2, 3, 5, 7, 11, 13,",
+ "p20-dialog": "\"Where were you last night?\" she asked.\n\"I"
+}

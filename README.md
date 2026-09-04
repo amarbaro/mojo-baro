@@ -133,10 +133,20 @@ decode. Disclosed asymmetries, uncorrected: llama.cpp uses a q8_0 KV cache and
 ours is f32 (negligible at these context lengths), and llama.cpp's number came
 through an HTTP server while ours is measured in-process.
 
-The 2.5x sitting in llama.cpp's MTP column is the real gap, not the 6%. The
-MTP draft head (`blk.32`) is implemented and numerically validated against a
-numpy reference, but it is still dump-only — nothing is drafted or verified in
-the decode loop yet, so no speculative number belongs in this table.
+2026-09-04, MTP speculative decode (`bench/mtp-protocol.md`, `BARO_SPEC=1`,
+k=4, draft = the model's own `blk.32` NextN head, verified in one k+1-row
+trunk window, greedy accept, output still bit-identical to the no-spec run):
+
+| | tok/s | vs no-spec |
+|---|---|---|
+| llama.cpp Q8_0, MTP speculative | 109.8 | 1.48x |
+| **mojo-baro q8 MTP `tok/s_gen`** | **128.0** (127.6–128.0, 0.3% spread) | 1.89x |
+
+So with speculation the engine decodes at **1.17x llama.cpp** on the same
+card, same GGUF, same quant, same tokens. Caveats that stay attached to
+that number: one 5-token prompt, 64 greedy tokens, acceptance 50/53 on a
+repetitive tail; per-prompt acceptance on a real prompt set is in
+`bench/mtp-protocol.md` as it lands.
 
 ## Layout
 

@@ -1,0 +1,2 @@
+// Rust: read a file into a String and count its lines
+fn count_lines(path: &str) -> std::io::Result<usize> {

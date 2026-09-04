@@ -1,0 +1,3 @@
+-- Table users(id, name, email, created_at)
+-- Query: the 10 most recently created users
+SELECT
