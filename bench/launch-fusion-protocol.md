@@ -86,3 +86,28 @@ preregistered round (XL, not this file).
 
 ## Not in this round
 q8 weights (bytes lever, not bit-exact). MTP verify width. Prefill.
+
+## Stage 0 receipt (2026-09-04, `bench/bench_launch_floor.mojo`, `.work/launch-floor-{1,2,3}.log`)
+
+2000 launches per arm after 200 warm, no sync between launches. Run 1 was at
+2105 MHz (cold), runs 2-3 at 3313 MHz (clock-probe receipts in the logs); the
+warm runs are the arms.
+
+| arm | run 2 | run 3 |
+|---|---|---|
+| (a) empty g1 b64, us/launch | 2.83 | 2.76 |
+| (b) empty g96 b256, us/launch | 2.59 | 2.57 |
+| (c) five ssm kernels, us/chain (us/launch) | 23.8 (4.77) | 24.5 (4.91) |
+| (d) fused shape, one launch, us | 16.25 | 16.26 |
+| ceiling = 646 x (b) / 24 ms | 6.96% | 6.91% |
+
+**S0 fired: floor(b) = 2.57 us < 3 us, ceiling 6.9% < 8%. Round closed at
+stage 0; stages 1 and 2 do not run.**
+
+What the receipt adds: the five-kernel chain is 24 us/layer of which ~13 us is
+launch floor and ~11 us is the state pass itself; the one-launch fused shape
+still costs 16 us, so stage 1 would have saved ~8 us x 24 layers = 0.2 ms
+= 0.8% per token, under its own +1.5% land rule. The ~20% to the HBM roof is
+not per-launch floor. Remaining candidates are per-kernel tail/ramp inside the
+GEMM launches (SPLITK partial + reduce pairs), which is a GEMM-shape question,
+and the bytes lever (q8).
