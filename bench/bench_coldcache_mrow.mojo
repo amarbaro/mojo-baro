@@ -16,7 +16,8 @@ from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import TileTensor, row_major
 
-from matmul_skinny import amar_matmul_skinny_q8row, SM, SPLITK, ROW_WAVES, ROW_THREADS
+from matmul_skinny import amar_matmul_skinny_q8row, amar_matmul_skinny_q8dot, SM, SPLITK, ROW_WAVES, ROW_THREADS
+from elementwise import amar_quantize_q8_rows
 
 comptime MAXM = 8
 comptime K = 4096
@@ -165,6 +166,110 @@ def run_arm[MR: Int](
     return us
 
 
+def run_dot_arm[MR: Int, UNROLL: Int = 4](
+    ctx: DeviceContext,
+    a_host: HostBuffer[bf16],
+    q_host: HostBuffer[u8],
+    q_dev: DeviceBuffer[u8],
+    base_us: Float64,
+) raises -> Float64:
+    comptime a_layout = row_major[MR, K]()
+    comptime aq_layout = row_major[MR, K]()
+    comptime as_layout = row_major[MR, K // 32]()
+    comptime quant = amar_quantize_q8_rows[
+        type_of(a_layout), type_of(aq_layout), type_of(as_layout)
+    ]
+    comptime q8dot = amar_matmul_skinny_q8dot[
+        UNROLL, MR, type_of(aq_layout), type_of(as_layout),
+        type_of(q_layout), type_of(s_layout), type_of(p_layout)
+    ]
+    comptime GRQ = (MR, K // 32)
+
+    var a_host_mr = ctx.enqueue_create_host_buffer[bf16](MR * K)
+    ctx.synchronize()
+    for i in range(MR * K):
+        a_host_mr[i] = a_host[i]
+    var a_dev = ctx.enqueue_create_buffer[bf16](MR * K)
+    ctx.enqueue_copy(dst_buf=a_dev, src_buf=a_host_mr)
+    var aq_dev = ctx.enqueue_create_buffer[i8](MR * K)
+    var as_dev = ctx.enqueue_create_buffer[f16](MR * (K // 32))
+    var aq_host = ctx.enqueue_create_host_buffer[i8](MR * K)
+    var as_host = ctx.enqueue_create_host_buffer[f16](MR * (K // 32))
+    var p_dev = ctx.enqueue_create_buffer[f32](SPLITK * SM * N)
+    var p_host = ctx.enqueue_create_host_buffer[f32](SPLITK * SM * N)
+    ctx.synchronize()
+
+    var A = TileTensor(a_dev, a_layout)
+    var Aq = TileTensor(aq_dev, aq_layout)
+    var As = TileTensor(as_dev, as_layout)
+    var Cp = TileTensor(p_dev, p_layout)
+
+    print(
+        "DOT MR=" + String(MR), "UNROLL=" + String(UNROLL), "grid_dim=" + String(GR),
+        "block_dim=" + String(ROW_THREADS), "ROW_WAVES=" + String(ROW_WAVES),
+    )
+
+    ctx.enqueue_function[quant](A, Aq, As, Int32(MR), Int32(K), grid_dim=GRQ, block_dim=32)
+    ctx.enqueue_copy(dst_buf=aq_host, src_buf=aq_dev)
+    ctx.enqueue_copy(dst_buf=as_host, src_buf=as_dev)
+    ctx.synchronize()
+
+    var qt0 = q_tensors(ctx, q_dev, 0)
+    ctx.enqueue_function[q8dot](
+        Aq, As, qt0[0], qt0[1], Cp, Int32(MR), Int32(N), Int32(K), grid_dim=GR, block_dim=ROW_THREADS
+    )
+    ctx.enqueue_copy(dst_buf=p_host, src_buf=p_dev)
+    ctx.synchronize()
+
+    var qp = q_host.unsafe_ptr().unsafe_bitcast[Int8]()
+    var sp = (q_host.unsafe_ptr() + N * K).unsafe_bitcast[Float16]()
+    var worst: Float64 = 0
+    for r in range(MR):
+        for j in range(N):
+            var s: Float64 = 0
+            for k in range(K):
+                var wd = Float64(sp[j * (K // 32) + k // 32])
+                var wq = Float64(qp[j * K + k])
+                var ad = Float64(as_host[r * (K // 32) + k // 32])
+                var aq = Float64(aq_host[r * K + k])
+                s += wq * wd * aq * ad
+            var rel = abs(Float64(p_host[r * N + j]) - s) / max(abs(s), 1e-3)
+            if rel > worst:
+                worst = rel
+
+    if worst > 2e-3:
+        print("DOT MR=" + String(MR), "m=" + String(MR), "FAIL max_rel=" + String(worst))
+        return -1.0
+
+    var w0 = perf_counter_ns()
+    while Float64(perf_counter_ns() - w0) / 1.0e9 < 1.0:
+        for b in range(NBUF):
+            var qtw = q_tensors(ctx, q_dev, b)
+            ctx.enqueue_function[q8dot](
+                Aq, As, qtw[0], qtw[1], Cp, Int32(MR), Int32(N), Int32(K), grid_dim=GR, block_dim=ROW_THREADS
+            )
+            ctx.synchronize()
+
+    var durs = InlineArray[Float64, ITERS](uninitialized=True)
+    for it in range(ITERS):
+        var qtw = q_tensors(ctx, q_dev, it % NBUF)
+        var t0 = perf_counter_ns()
+        ctx.enqueue_function[q8dot](
+            Aq, As, qtw[0], qtw[1], Cp, Int32(MR), Int32(N), Int32(K), grid_dim=GR, block_dim=ROW_THREADS
+        )
+        ctx.synchronize()
+        durs[it] = Float64(perf_counter_ns() - t0) / 1.0e3
+
+    var us = median_us(durs)
+    var gbps = Float64(QBYTES) / (us * 1.0e-6) / 1.0e9
+    var ratio = us / base_us if base_us > 0 else 1.0
+    print(
+        "DOT MR=" + String(MR), "m=" + String(MR), "us=" + String(us), "GBps=" + String(gbps),
+        "ratio_vs_bf16_m1=" + String(ratio), "max_rel=" + String(worst), "correct=true",
+    )
+    return us
+
+
 def main() raises:
     comptime assert has_accelerator(), "Requires a GPU"
     var ctx = DeviceContext()
@@ -188,3 +293,13 @@ def main() raises:
     _ = run_arm[2](ctx, a_host, q_host, q_dev, us1)
     _ = run_arm[4](ctx, a_host, q_host, q_dev, us1)
     _ = run_arm[8](ctx, a_host, q_host, q_dev, us1)
+
+    _ = run_dot_arm[1](ctx, a_host, q_host, q_dev, us1)
+    _ = run_dot_arm[2](ctx, a_host, q_host, q_dev, us1)
+    _ = run_dot_arm[4](ctx, a_host, q_host, q_dev, us1)
+    _ = run_dot_arm[8](ctx, a_host, q_host, q_dev, us1)
+
+    _ = run_dot_arm[4, 2](ctx, a_host, q_host, q_dev, us1)
+    _ = run_dot_arm[4, 8](ctx, a_host, q_host, q_dev, us1)
+    _ = run_dot_arm[8, 2](ctx, a_host, q_host, q_dev, us1)
+    _ = run_dot_arm[8, 8](ctx, a_host, q_host, q_dev, us1)
