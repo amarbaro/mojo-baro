@@ -317,6 +317,82 @@ def amar_matmul_skinny_q8row[
                 Cp[0, r, row] = rebind[Cp.ElementType](total)
 
 
+def amar_matmul_skinny_q4row[
+    UNROLL: Int, MR: Int,
+    ALayout: TensorLayout, QLayout: TensorLayout, SLayout: TensorLayout,
+    PLayout: TensorLayout
+](
+    A: TileTensor[DType.bfloat16, ALayout, MutAnyOrigin],
+    Q: TileTensor[DType.uint8, QLayout, MutAnyOrigin],
+    S: TileTensor[DType.float16, SLayout, MutAnyOrigin],
+    Cp: TileTensor[dtype, PLayout, MutAnyOrigin],
+    m: Int32,
+    n: Int32,
+    k_dim: Int32,
+):
+    # Q is [N, K/2] bytes, ggml Q4_0 nibble order per 32-element block: byte j
+    # (j in 0..15) packs element j in its low nibble, element j+16 in its
+    # high nibble; both decode as nibble - 8 scaled by the block's fp16 d.
+    comptime assert A.flat_rank == 2 and Q.flat_rank == 2
+    comptime assert S.flat_rank == 2 and Cp.flat_rank == 3
+
+    var M = Int(m)
+    var N = Int(n)
+    var K = Int(k_dim)
+    var lane = Int(lane_id())
+    var row = Int(block_idx.x) * ROW_WAVES + Int(thread_idx.x) // WARP_SIZE
+    if row >= N:
+        return
+
+    comptime QV = 16
+    comptime STEP = WARP_SIZE
+    var Qb = Q.vectorize[1, QV]()
+    var Av = A.vectorize[1, QV]()
+    var acc = InlineArray[SIMD[dtype, QV], MR](fill=SIMD[dtype, QV](0))
+    var eight = SIMD[dtype, QV](8)
+
+    var nb = K // 32
+    var kk = 0
+    while kk + UNROLL * STEP <= nb:
+        var bytes_u = InlineArray[SIMD[DType.uint8, QV], UNROLL](uninitialized=True)
+        var ds = InlineArray[Scalar[DType.float16], UNROLL](uninitialized=True)
+
+        comptime for u in range(UNROLL):
+            var blk = kk + u * STEP + lane
+            bytes_u[u] = rebind[SIMD[DType.uint8, QV]](Qb[row, blk])
+            ds[u] = rebind[Scalar[DType.float16]](S[row, blk])
+
+        comptime for u in range(UNROLL):
+            var blk = kk + u * STEP + lane
+            var d = ds[u].cast[dtype]()
+            var wlo = ((bytes_u[u] & UInt8(0xF)).cast[dtype]() - eight) * d
+            var whi = ((bytes_u[u] >> UInt8(4)).cast[dtype]() - eight) * d
+            comptime for r in range(MR):
+                if r < M:
+                    var a_lo = rebind[SIMD[DType.bfloat16, QV]](Av[r, blk * 2]).cast[dtype]()
+                    var a_hi = rebind[SIMD[DType.bfloat16, QV]](Av[r, blk * 2 + 1]).cast[dtype]()
+                    acc[r] += wlo * a_lo + whi * a_hi
+        kk += UNROLL * STEP
+    while kk < nb:
+        var blk = kk + lane
+        var bytes1 = rebind[SIMD[DType.uint8, QV]](Qb[row, blk])
+        var d = rebind[Scalar[DType.float16]](S[row, blk]).cast[dtype]()
+        var wlo = ((bytes1 & UInt8(0xF)).cast[dtype]() - eight) * d
+        var whi = ((bytes1 >> UInt8(4)).cast[dtype]() - eight) * d
+        comptime for r in range(MR):
+            if r < M:
+                var a_lo = rebind[SIMD[DType.bfloat16, QV]](Av[r, blk * 2]).cast[dtype]()
+                var a_hi = rebind[SIMD[DType.bfloat16, QV]](Av[r, blk * 2 + 1]).cast[dtype]()
+                acc[r] += wlo * a_lo + whi * a_hi
+        kk += STEP
+
+    comptime for r in range(MR):
+        if r < M:
+            var total = warp.sum(acc[r].reduce_add())
+            if lane == 0:
+                Cp[0, r, row] = rebind[Cp.ElementType](total)
+
+
 comptime Q8_BLOCK = 32
 
 

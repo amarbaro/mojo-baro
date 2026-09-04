@@ -7,13 +7,23 @@ GEMM; f32 tensors (norms, conv, ssm scalars) as-is. Emits, per line:
 in a fixed, engine-known order. The blk.32 NextN draft head is appended
 after output.weight, so every trunk offset is unchanged by its presence.
 
-Usage: tools/engine-pack.py MODEL.gguf OUTDIR [--q8]
+Usage: tools/engine-pack.py MODEL.gguf OUTDIR [--q8] [--q4-draft]
 
 --q8: every 2D bf16 weight except token_embd is stored int8 in weight-native
 [out, in] layout followed by fp16 block scales [out, in/32], ggml q8_0
 rounding (d = amax/127 in fp32, q = roundf(x * (1/d)), d stored as fp16).
 Index dtype is "q8"; n_elem counts weights, the scales follow at
 offset + n_elem bytes.
+
+--q4-draft: after the existing order (trunk untouched, keeps whatever the
+--q8 flag gave it), append output.weight a second time as ggml-exact Q4_0
+(int4 nibbles [N, K/2], element order per quantize_row_q4_0_ref: qs[j] low
+nibble = x[j], high nibble = x[j+16], j in 0..15 per 32-block; fp16 block-32
+scale d = max/-8 where max is the SIGNED value at the largest-|x| position)
+under index name "output.weight.q4draft", dtype "q4". This is the MTP draft
+head's weight only; the draft path opts in via BARO_DRAFT_Q4, the trunk
+lookup (name "output.weight") is unaffected since it matches the first,
+unchanged, entry.
 """
 import sys
 from pathlib import Path
@@ -74,10 +84,29 @@ def quantize_q8_0(w16):
     return q.reshape(w16.shape[0], -1), d.astype(np.float16)
 
 
+def quantize_q4_0(w16):
+    """ggml quantize_row_q4_0_ref, vectorized. w16: [N, K] bf16, K % 32 == 0."""
+    n_out, k = w16.shape
+    x = bf16_to_f32(w16).reshape(n_out, k // 32, 32)
+    amax_idx = np.abs(x).argmax(axis=2)
+    signed_max = np.take_along_axis(x, amax_idx[:, :, None], axis=2)[:, :, 0]
+    d = (signed_max / np.float32(-8.0)).astype(np.float32)
+    idv = np.where(d != 0, np.float32(1.0) / d, np.float32(0)).astype(np.float32)
+    x0 = x[:, :, 0:16] * idv[:, :, None]
+    x1 = x[:, :, 16:32] * idv[:, :, None]
+    xi0 = np.clip(np.trunc(x0 + np.float32(8.5)), 0, 15).astype(np.uint8)
+    xi1 = np.clip(np.trunc(x1 + np.float32(8.5)), 0, 15).astype(np.uint8)
+    qs = (xi0 | (xi1 << np.uint8(4))).astype(np.uint8)
+    return qs.reshape(n_out, -1), d.astype(np.float16)
+
+
 def main():
     q8 = "--q8" in sys.argv
     if q8:
         sys.argv.remove("--q8")
+    q4_draft = "--q4-draft" in sys.argv
+    if q4_draft:
+        sys.argv.remove("--q4-draft")
     model, outdir = Path(sys.argv[1]), Path(sys.argv[2])
     outdir.mkdir(parents=True, exist_ok=True)
     f, infos, data_start, kv = ge.parse(model)
@@ -108,6 +137,20 @@ def main():
                     raw = np.ascontiguousarray(w.T).tobytes()
             out.write(raw)
             idx_lines.append(f"{name} {tname} {off} {n_elem}")
+            off += len(raw)
+        if q4_draft:
+            dims, ttype, toff = infos["output.weight"]
+            tname, esize = ge.GGML_BYTES[ttype]
+            assert tname == "bf16", tname
+            n_elem = int(np.prod(dims))
+            f.seek(data_start + toff)
+            w = np.frombuffer(f.read(n_elem * esize), dtype=np.uint16).reshape(
+                list(reversed(dims))
+            )
+            q, d = quantize_q4_0(w)
+            raw = q.tobytes() + d.tobytes()
+            out.write(raw)
+            idx_lines.append(f"output.weight.q4draft q4 {off} {n_elem}")
             off += len(raw)
     (outdir / "index.txt").write_text("\n".join(idx_lines) + "\n")
     print(f"packed {len(order)} tensors, {off/2**30:.2f} GiB")

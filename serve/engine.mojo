@@ -83,6 +83,30 @@ def tens_q8s[
     return rebind[TileTensor[DType.float16, LT, MutAnyOrigin]](t)
 
 
+def tens_q4q[
+    LT: TensorLayout
+](
+    ctx: DeviceContext, wbuf: DeviceBuffer[DType.uint8], o: Int, n: Int, lt: LT
+) -> TileTensor[DType.uint8, LT, MutAnyOrigin]:
+    var b = DeviceBuffer[DType.uint8](
+        ctx, (wbuf.unsafe_ptr() + o).unsafe_bitcast[Scalar[DType.uint8]](), n // 2, owning=False
+    )
+    var t = TileTensor(b, lt)
+    return rebind[TileTensor[DType.uint8, LT, MutAnyOrigin]](t)
+
+
+def tens_q4s[
+    LT: TensorLayout
+](
+    ctx: DeviceContext, wbuf: DeviceBuffer[DType.uint8], o: Int, n: Int, lt: LT
+) -> TileTensor[DType.float16, LT, MutAnyOrigin]:
+    var b = DeviceBuffer[DType.float16](
+        ctx, (wbuf.unsafe_ptr() + o + n // 2).unsafe_bitcast[Scalar[DType.float16]](), n // 32, owning=False
+    )
+    var t = TileTensor(b, lt)
+    return rebind[TileTensor[DType.float16, LT, MutAnyOrigin]](t)
+
+
 def tens_f32[
     LT: TensorLayout
 ](
@@ -126,6 +150,7 @@ def blk32_forward(
     mut hd_d: DeviceBuffer[f32], mut kc32_d: DeviceBuffer[f32], mut vc32_d: DeviceBuffer[f32],
     mut toks_d: DeviceBuffer[DType.int32], mut dtok_d: DeviceBuffer[DType.int32],
     prof3: Bool, mut p3: List[Int],
+    draft_q4: Bool, q4_off: Int,
 ) raises:
     # blk.32 (NextN) draft head over m rows: row r is token Toks[tok_pos + r]
     # at sequence position pos + r, paired with hidden row r of hsrc
@@ -237,10 +262,15 @@ def blk32_forward(
         t3 = now3
     if do_head:
         ctx.enqueue_function[rmsc_k](Xm, SharedHeadNorm, CurBm, Int32(H), Float32(1e-6), grid_dim=m, block_dim=256)
-        var Wheadq = tens_q8q(ctx, wbuf, off[e - 1], H * VOCAB, q_h_v)
-        var Wheads = tens_q8s(ctx, wbuf, off[e - 1], H * VOCAB, s_h_v)
         var Pv = TileTensor(p_v_d, p_v)
-        gemm_q8(ctx, CurBm, Wheadq, Wheads, Pv, m, VOCAB, H)
+        if draft_q4:
+            var Wheadq4 = tens_q4q(ctx, wbuf, q4_off, H * VOCAB, q4_h_v)
+            var Wheads4 = tens_q4s(ctx, wbuf, q4_off, H * VOCAB, s_h_v)
+            gemm_q4(ctx, CurBm, Wheadq4, Wheads4, Pv, m, VOCAB, H)
+        else:
+            var Wheadq = tens_q8q(ctx, wbuf, off[e - 1], H * VOCAB, q_h_v)
+            var Wheads = tens_q8s(ctx, wbuf, off[e - 1], H * VOCAB, s_h_v)
+            gemm_q8(ctx, CurBm, Wheadq, Wheads, Pv, m, VOCAB, H)
         ctx.enqueue_function[r_head](Pv, Logitsm, Int32(m), Int32(VOCAB), grid_dim=ceildiv(m * VOCAB, 256), block_dim=256)
         if prof3:
             ctx.synchronize()
@@ -262,6 +292,8 @@ def main() raises:
     # --- offset table from the pack index (tools/engine-pack.py order) ----
     var off = List[Int]()
     var total = 0
+    var q4_off = 0
+    var have_q4_draft = False
     with open(packdir + "/index.txt", "r") as f:
         for line in f.read().splitlines():
             var parts = line.split(" ")
@@ -276,9 +308,18 @@ def main() raises:
                 total += n * B4
             elif dt == "q8":
                 total += n + (n // 32) * 2
+            elif dt == "q4":
+                # trailing entry (tools/engine-pack.py --q4-draft): the draft
+                # head's own q4 copy of output.weight, appended after the
+                # trunk order -- excluded from the blk.32 index math below.
+                q4_off = Int(parts[2])
+                have_q4_draft = True
+                total += n // 2 + (n // 32) * 2
             else:
                 raise Error("unknown pack dtype " + dt)
-    var e = len(off) - 15
+    var draft_q4 = getenv("BARO_DRAFT_Q4", "0") == "1" and have_q4_draft
+    print("BARO_DRAFT_Q4:", draft_q4)
+    var e = len(off) - (1 if have_q4_draft else 0) - 15
 
     # --- load pack into one device buffer -----------------------------------
     print("loading pack:", total, "bytes")
@@ -481,7 +522,7 @@ def main() raises:
             blk32_forward(ctx, wbuf, off, e, nproc, pos_prev + 1, pos_prev + 1, True, hn_rows,
                 x_d, curb_d, qf_d, q_d, k_d, v_d, gate_d, ao_d, resb_d, fgb_d, p_qf_d, p_kv_d, p_h_d,
                 p_ffn_d, p_ffn2_d, p_v_d, logits_d, cc_d, de_d, hd_d, kc32_d, vc32_d, toks_d, dtok_d,
-                pf3, p3)
+                pf3, p3, draft_q4, q4_off)
             var Dtok = TileTensor(dtok_d, dtok_layout)
             ctx.enqueue_function[tokcp_k](Dtok, Toks, Int32(nproc - 1), Int32(pos + 1), Int32(1), grid_dim=1, block_dim=32)
             m = min(kcfg + 1, n_total - 1 - pos)
@@ -495,7 +536,7 @@ def main() raises:
                 blk32_forward(ctx, wbuf, off, e, 1, pos + j, pos + j, True, hd_row,
                     x_d, curb_d, qf_d, q_d, k_d, v_d, gate_d, ao_d, resb_d, fgb_d, p_qf_d, p_kv_d, p_h_d,
                     p_ffn_d, p_ffn2_d, p_v_d, logits_d, cc_d, de_d, hd_d, kc32_d, vc32_d, toks_d, dtok_d,
-                    pf3, p3)
+                    pf3, p3, draft_q4, q4_off)
                 ctx.enqueue_function[tokcp_k](Dtok, Toks, Int32(0), Int32(pos + j + 1), Int32(1), grid_dim=1, block_dim=32)
                 hrow = 0
             n_drafted += m - 1
@@ -810,7 +851,7 @@ def main() raises:
     blk32_forward(ctx, wbuf, off, e, 1, 0, n_total - 1, True, hn_last,
         x_d, curb_d, qf_d, q_d, k_d, v_d, gate_d, ao_d, resb_d, fgb_d, p_qf_d, p_kv_d, p_h_d,
         p_ffn_d, p_ffn2_d, p_v_d, logits_d, cc_d, de_d, hd_d, kc32_d, vc32_d, toks_d, dtok_d,
-        False, p3)
+        False, p3, False, 0)
     var last_tok = generated[len(generated) - 1]
     ctx.synchronize()
     var draft_logits_h = ctx.enqueue_create_host_buffer[f32](VOCAB)

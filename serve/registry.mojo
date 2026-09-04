@@ -6,7 +6,7 @@ from elementwise import (
     amar_rmsnorm, amar_rmsnorm_cast, amar_embed_lookup_pos, amar_argmax_pos, amar_tok_copy,
 )
 from matmul_skinny import (
-    amar_matmul_skinny_q8row, amar_skinny_reduce, amar_skinny_reduce_add,
+    amar_matmul_skinny_q8row, amar_matmul_skinny_q4row, amar_skinny_reduce, amar_skinny_reduce_add,
     amar_skinny_reduce_swiglu_bf16, SM, SPLITK, ROW_WAVES, ROW_THREADS,
 )
 from ssm import (
@@ -95,6 +95,7 @@ comptime q_ffn_h = row_major[H, FFN]()
 comptime s_ffn_h = row_major[H, FFN // 32]()
 comptime q_h_v = row_major[VOCAB, H]()
 comptime s_h_v = row_major[VOCAB, H // 32]()
+comptime q4_h_v = row_major[VOCAB, H // 2]()
 comptime q_qf_h = row_major[H, QF]()
 comptime s_qf_h = row_major[H, QF // 32]()
 
@@ -222,6 +223,43 @@ def gemm_q8[
         )
     else:
         ctx.enqueue_function[amar_matmul_skinny_q8row[4, SM, AL, QL, SL, PL]](
+            A, Wq, Ws, P, Int32(m), Int32(n), Int32(k),
+            grid_dim=ceildiv(n, ROW_WAVES), block_dim=ROW_THREADS,
+        )
+
+
+def gemm_q4[
+    AL: TensorLayout, QL: TensorLayout, SL: TensorLayout, PL: TensorLayout
+](
+    ctx: DeviceContext,
+    A: TileTensor[bf16, AL, MutAnyOrigin],
+    Wq: TileTensor[DType.uint8, QL, MutAnyOrigin],
+    Ws: TileTensor[DType.float16, SL, MutAnyOrigin],
+    P: TileTensor[f32, PL, MutAnyOrigin],
+    m: Int, n: Int, k: Int,
+) raises:
+    if m == 1:
+        ctx.enqueue_function[amar_matmul_skinny_q4row[2, 1, AL, QL, SL, PL]](
+            A, Wq, Ws, P, Int32(m), Int32(n), Int32(k),
+            grid_dim=ceildiv(n, ROW_WAVES), block_dim=ROW_THREADS,
+        )
+    elif m == 2:
+        ctx.enqueue_function[amar_matmul_skinny_q4row[2, 2, AL, QL, SL, PL]](
+            A, Wq, Ws, P, Int32(m), Int32(n), Int32(k),
+            grid_dim=ceildiv(n, ROW_WAVES), block_dim=ROW_THREADS,
+        )
+    elif m == 3:
+        ctx.enqueue_function[amar_matmul_skinny_q4row[2, 3, AL, QL, SL, PL]](
+            A, Wq, Ws, P, Int32(m), Int32(n), Int32(k),
+            grid_dim=ceildiv(n, ROW_WAVES), block_dim=ROW_THREADS,
+        )
+    elif m <= 5:
+        ctx.enqueue_function[amar_matmul_skinny_q4row[2, 5, AL, QL, SL, PL]](
+            A, Wq, Ws, P, Int32(m), Int32(n), Int32(k),
+            grid_dim=ceildiv(n, ROW_WAVES), block_dim=ROW_THREADS,
+        )
+    else:
+        ctx.enqueue_function[amar_matmul_skinny_q4row[2, SM, AL, QL, SL, PL]](
             A, Wq, Ws, P, Int32(m), Int32(n), Int32(k),
             grid_dim=ceildiv(n, ROW_WAVES), block_dim=ROW_THREADS,
         )
