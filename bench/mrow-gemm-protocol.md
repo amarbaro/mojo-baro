@@ -75,3 +75,24 @@ no gain at the window sizes the engine uses, not wired into the engine.
 Stage M1 is re-scoped to an ablation (traffic vs ALU vs occupancy at m=4/8)
 before any second kernel attempt; M2 (SSM per-row fold) is now the lead
 lever for the 2-row window.
+
+### Per-window cost split (2026-09-04, driver, race prompt, BARO_PROFILE=1)
+
+1-row decode window vs 2-row speculative window (k=1), ms per window,
+profile syncs inflate absolutes, deltas are the signal:
+
+| block | 1-row | 2-row | delta |
+|---|---|---|---|
+| attn | 1.55 | 1.76 | +0.21 |
+| ssm | 4.76 | 5.82 | +1.06 |
+| ffn | 8.41 | 9.34 | +0.93 |
+| head | 1.54 | 1.61 | +0.07 |
+| draft path (process + draft) | 0 | 2.22 | +2.22 |
+
+Sum +4.4 ms on 16.3 = 1.27x, matching the measured window cost. Lever order
+by size: draft path 2.2 (blk.32 layer + 1.06 GB q8 LM head + argmax + host
+sync per window), SSM per-row 1.06 (M2, lane C), ffn 0.93 (GEMM m=2 is
+1.04x = 0.34 of it; the rest is in the SPLITK reduce / swiglu at m rows,
+unmeasured), attn 0.21. Draft-path split and the q4 draft head are the
+next preregistered items; draft quantization cannot change output tokens,
+only acceptance, so it is not gated by bit-exactness.
