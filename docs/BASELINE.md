@@ -67,6 +67,13 @@ the ffn shape (62.6 us per 100 MB-equivalent stream). Decode: **68.8 tok/s_gen**
 Q8_0 no-spec bar 74.1. The bf16 pack path (41.7 tok/s) is gone from the
 engine; its numbers stay in `bench/q8-protocol.md`.
 
+**MTP speculative decode (`BARO_SPEC=1`, k=4 via `BARO_SPEC_K` or
+`spec-k.txt`): 127.96 tok/s_gen** (median 4, spread 0.3%), 1.89x over the
+no-spec arm (67.77), 64/64 on every run, acceptance 50/53 on the 5-token
+prompt. Draft = `blk.32` head; rows verified in one m=k+1 trunk window,
+SSM/conv state in a (k+1)-slot ring so rollback is free. llama.cpp MTP bar
+109.8, ours 1.17x. Protocol and bug log: `bench/mtp-protocol.md`.
+
 Weight-native wave-per-row is the fastest measured stream on this card
 (qingming-gfx1100-gemv 917 GB/s fp32; ours 856 bf16 / 855 q8). The earlier
 "wt-layout is coalescing-bound" verdict was about a thread-per-column kernel.

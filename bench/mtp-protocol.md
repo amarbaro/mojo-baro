@@ -165,3 +165,28 @@ bodies x 0.2 GB ~= 15.7 GB for ~4.4 tokens -> 3.6 GB/token vs 10.7 today.
 Both arms 5 repeats, discard first, median of 4; server down; `BARO_SPEC`
 and `spec k` printed by the run are the P1 receipts, plus per-run
 `drafted/accepted` counts.
+
+## Result (2026-09-04, amendment arms; run on the tree that landed as the next two commits)
+
+Correctness precondition: 64/64 on every run of both arms (10/10), plus
+`BARO_SPEC_K=1` 64/64. Receipts per run: `spec k: 4`, `BARO_SPEC: True/False`,
+`mtp: drafted 53 accepted 50 k 4` (arm B). bge-m3 llama-server stopped.
+Logs `.work/mtp-gate/{A,B}{1..5}.log`, `summary.txt`.
+
+| arm | kept 4 (tok/s_gen) | median | spread |
+|---|---|---|---|
+| A (`BARO_SPEC` unset) | 67.79 67.71 67.75 68.50 | **67.77** | 1.2% |
+| B (`BARO_SPEC=1`, k=4) | 127.99 127.61 127.92 128.02 | **127.96** | 0.3% |
+
+Speedup **1.888x** (predicted 1.6-2.4x): LANDS. Acceptance 50/53 = 94%,
+above the 60-85% band (5-token prompt, repetitive 64-token greedy tail;
+recorded, not claimed as general). llama.cpp MTP bar 109.8 -> ours 1.17x.
+
+Two bugs found on the way, both would have voided the run:
+1. First speculative window after prefill skipped the accept check
+   (`prefill_done` gate), writing all drafted-row argmaxes unverified;
+   token 5 wrong. Fixed with a per-window `win_spec` flag.
+2. `amar_matmul_skinny_q8row[MR>1]` looped rows with a runtime `M`,
+   dynamic-indexing the accumulator array into scratch: a 5-row window
+   cost ~8x a 1-row pass (first arm B: 31.9 tok/s, falsifier fired).
+   Compile-time `MR` loop with `r < M` guard; prefill 0.116 -> 0.046 s.
