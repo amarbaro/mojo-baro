@@ -102,3 +102,32 @@ Q1 is therefore two arms, both preregistered here:
   claimed (different summation order); token gate re-established.
 - Q1b q8 wave-per-row, prediction 62-75 us, land <= 85 us (tightened from 90).
 Stop rule for Q1 unchanged: q8 > 100 us closes the round.
+
+### Q1a receipt (2026-09-04): NOT landed, template validated
+
+`amar_matmul_skinny_m1_row[bf16, UNROLL]`, wave per row over the weight-native
+[N, K] bf16, 16 B per lane per strip, UNROLL strips in flight, warp reduce.
+`bench/bench_coldcache_row.mojo`, 8 rotating 100 MB buffers, 200 iters x 10
+reps, logs `.work/coldcache-row-20260904.log`, `.work/coldcache-row-u16-20260904.log`.
+All arms max rel err 2.2e-4 vs the fp32 host reference (same class as m1).
+
+| arm | us (rep median) | GB/s | VGPR | clock / power |
+|---|---|---|---|---|
+| m1c8 control | 121.2 | 830 | 29 | 3074 MHz, 288-300 W |
+| row UNROLL=1 | 125.0 | 805 | | |
+| row UNROLL=4 | 118.6 | 848 | | |
+| row UNROLL=8 | **117.5** | 856 | 91 | 3074 MHz, 288-300 W |
+| row UNROLL=16 | 124.3 | 809 | 95 | |
+| qingming fp32 STREAMING, same shape, 201 MB | 219.5 | 917 | | 3301 MHz, up to 357 W |
+
+Prediction was 105-115 us, land <= 115: **missed by 2.5 us**. -3.1% over the
+champion, which is real but under the rule. Two of qingming's ingredients are
+not reproducible here: nontemporal loads (`max.gpu.memory.load` with
+`CacheOperation.STREAMING` emits a plain `global_load_b128` on gfx1100, ISA
+checked) and its power state (their run holds 3301 MHz at up to 357 W, ours
+3074 MHz at 300 W; the card, not the code, picks that).
+
+Decision: the wave-per-row template is validated at 856 GB/s (89% of peak)
+and becomes the Q1b base. bf16 engine wiring is NOT done on -3.1% (token gate
+re-establishment is not worth it for that); if Q1b lands, the bf16 path is
+moot anyway.

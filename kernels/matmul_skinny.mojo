@@ -1,5 +1,6 @@
 
-from std.gpu import block_idx, global_idx, thread_idx
+from std.gpu import block_idx, global_idx, lane_id, thread_idx, WARP_SIZE
+from std.gpu.primitives import warp
 from std.math import exp
 from max.gpu.memory import AddressSpace
 from max.gpu.sync import barrier
@@ -12,6 +13,9 @@ comptime SBN = 256
 comptime SPLITK = 32
 comptime SK_THREADS = SBN
 comptime KCHUNK = 128
+comptime ROW_WAVES = 8
+comptime ROW_THREADS = ROW_WAVES * WARP_SIZE
+comptime ROW_VEC = 8
 
 
 def amar_matmul_skinny[
@@ -200,6 +204,52 @@ def amar_matmul_skinny_m1[
     if c0 < N:
         comptime for j in range(CPT):
             Cp[block_idx.y, 0, c0 + j] = rebind[Cp.ElementType](acc[j])
+
+
+def amar_matmul_skinny_m1_row[
+    in_dtype: DType, UNROLL: Int,
+    ALayout: TensorLayout, WLayout: TensorLayout, OLayout: TensorLayout
+](
+    A: TileTensor[in_dtype, ALayout, MutAnyOrigin],
+    W: TileTensor[in_dtype, WLayout, MutAnyOrigin],
+    O: TileTensor[dtype, OLayout, MutAnyOrigin],
+    n: Int32,
+    k_dim: Int32,
+):
+    comptime assert A.flat_rank == 2 and W.flat_rank == 2 and O.flat_rank == 1
+
+    var N = Int(n)
+    var K = Int(k_dim)
+    var lane = Int(lane_id())
+    var row = Int(block_idx.x) * ROW_WAVES + Int(thread_idx.x) // WARP_SIZE
+    if row >= N:
+        return
+
+    var Wv = W.vectorize[1, ROW_VEC]()
+    var Av = A.vectorize[1, ROW_VEC]()
+    comptime STEP = WARP_SIZE * ROW_VEC
+    var acc = SIMD[dtype, ROW_VEC](0)
+
+    var kk = 0
+    while kk + UNROLL * STEP <= K:
+        var ws = InlineArray[SIMD[in_dtype, ROW_VEC], UNROLL](uninitialized=True)
+
+        comptime for u in range(UNROLL):
+            ws[u] = rebind[SIMD[in_dtype, ROW_VEC]](Wv[row, (kk + u * STEP) // ROW_VEC + lane])
+
+        comptime for u in range(UNROLL):
+            var a = rebind[SIMD[in_dtype, ROW_VEC]](Av[0, (kk + u * STEP) // ROW_VEC + lane]).cast[dtype]()
+            acc += ws[u].cast[dtype]() * a
+        kk += UNROLL * STEP
+    while kk < K:
+        var w = rebind[SIMD[in_dtype, ROW_VEC]](Wv[row, kk // ROW_VEC + lane]).cast[dtype]()
+        var a = rebind[SIMD[in_dtype, ROW_VEC]](Av[0, kk // ROW_VEC + lane]).cast[dtype]()
+        acc += w * a
+        kk += STEP
+
+    var total = warp.sum(acc.reduce_add())
+    if lane == 0:
+        O[row] = rebind[O.ElementType](total)
 
 
 def amar_matmul_skinny_m1_dual[
