@@ -11,7 +11,7 @@ from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext, HostBuffer
 from layout import TileTensor, row_major
 
-from matmul_wmma_pipe import amar_matmul_wmma_pipe, BLK_M, BLK_N, BLK_K, NTHREADS, WARPS_M, WARPS_N, WTILE_M, WTILE_N, PAD_A, PAD_B, TRANS_B, ALIGNED, C_DTYPE, PGR, LB, ABL, PRIO
+from matmul_wmma_pipe import amar_matmul_wmma_pipe, BLK_M, BLK_N, BLK_K, NTHREADS, WARPS_M, WARPS_N, WTILE_M, WTILE_N, PAD_A, PAD_B, TRANS_B, ALIGNED, C_DTYPE, PGR, LB, ABL, PRIO, TB
 
 comptime M = 512
 comptime N = 512
@@ -20,7 +20,7 @@ comptime ITERS = 200
 comptime WARMUP_SECONDS = 10.0
 
 comptime a_layout = row_major[M, K]()
-comptime b_layout = row_major[K, N]()
+comptime b_layout = row_major[N, K]() if TB == 1 else row_major[K, N]()
 comptime c_layout = row_major[M, N]()
 
 
@@ -36,7 +36,10 @@ def check(
         for col in range(0, N, CSTEP):
             var want = Float64(0)
             for p in range(K):
-                want += Float64(a[r * K + p]) * Float64(b[p * N + col])
+                comptime if TB == 1:
+                    want += Float64(a[r * K + p]) * Float64(b[col * K + p])
+                else:
+                    want += Float64(a[r * K + p]) * Float64(b[p * N + col])
             var err = abs(Float64(c[r * N + col]) - want)
             if err > worst:
                 worst = err
@@ -56,8 +59,13 @@ def main() raises:
     # rather than rounding.
     for i in range(M * K):
         ah[i] = Scalar[DType.float16]((i % 7) - 3)
-    for i in range(K * N):
-        bh[i] = Scalar[DType.float16]((i % 5) - 2)
+    comptime if TB == 1:
+        for n in range(N):
+            for p in range(K):
+                bh[n * K + p] = Scalar[DType.float16](((p * N + n) % 5) - 2)
+    else:
+        for i in range(K * N):
+            bh[i] = Scalar[DType.float16]((i % 5) - 2)
 
     var ad = ctx.enqueue_create_buffer[DType.float16](M * K)
     var bd = ctx.enqueue_create_buffer[DType.float16](K * N)
@@ -112,7 +120,7 @@ def main() raises:
     out += '"gflops": ' + String(FLOPS / (ms * 1.0e6)) + ", "
     out += '"correct": ' + ("true" if err < 0.01 else "false") + ", "
     out += '"max_err": ' + String(err) + ", "
-    out += '"iters": ' + String(ITERS) + ', "warmup_s": ' + String(WARMUP_SECONDS) + ', "pgr": ' + String(PGR) + ', "lb": ' + String(LB) + ', "abl": ' + String(ABL) + ', "prio": ' + String(PRIO) + ', "tile": 16, "dtype": "float16", '
+    out += '"iters": ' + String(ITERS) + ', "warmup_s": ' + String(WARMUP_SECONDS) + ', "pgr": ' + String(PGR) + ', "lb": ' + String(LB) + ', "abl": ' + String(ABL) + ', "prio": ' + String(PRIO) + ', "tb": ' + String(TB) + ', "tile": 16, "dtype": "float16", '
     out += '"blk": [' + String(BM) + ", " + String(BN) + ", " + String(BLK_K) + "], "
     out += '"warps": [' + String(WM) + ", " + String(WN) + "], "
     out += '"wtile": [' + String(TM) + ", " + String(TN) + "], "

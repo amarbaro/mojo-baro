@@ -25,6 +25,7 @@ comptime PGR = 2
 comptime LB = 0
 comptime ABL = 0
 comptime PRIO = 0
+comptime TB = 0
 comptime LB_MAX = NTHREADS if LB == 1 else 1024
 comptime C_DTYPE = DType.float16 if C_F16 == 1 else DType.float32
 
@@ -129,18 +130,32 @@ def amar_matmul_wmma_pipe[
             sta[s * VEC + i] = x[i]
     comptime for s in range(B_PER):
         var v = tid + s * NTHREADS
-        var r = (v % BLK_K) if TRANS_B == 2 else (v // (BLK_N // VEC))
-        var c = ((v // BLK_K) * VEC) if TRANS_B == 2 else ((v % (BLK_N // VEC)) * VEC)
-        var gc = block_col + c
-        var x = SIMD[DType.float16, VEC](0)
-        if ALIGNED == 1 or (r < K and gc + VEC <= N):
-            x = rebind[SIMD[DType.float16, VEC]](Bv[r, gc // VEC])
-        elif r < K:
+        comptime if TB == 1:
+            var rn = v // KCH
+            var kc = (v % KCH) * VEC
+            var grn = block_col + rn
+            var x = SIMD[DType.float16, VEC](0)
+            if ALIGNED == 1 or (grn < N and kc + VEC <= K):
+                x = rebind[SIMD[DType.float16, VEC]](Bv[grn, kc // VEC])
+            elif grn < N:
+                comptime for i in range(VEC):
+                    if kc + i < K:
+                        x[i] = rebind[Scalar[DType.float16]](B[grn, kc + i])
             comptime for i in range(VEC):
-                if gc + i < N:
-                    x[i] = rebind[Scalar[DType.float16]](B[r, gc + i])
-        comptime for i in range(VEC):
-            stb[s * VEC + i] = x[i]
+                stb[s * VEC + i] = x[i]
+        else:
+            var r = (v % BLK_K) if TRANS_B == 2 else (v // (BLK_N // VEC))
+            var c = ((v // BLK_K) * VEC) if TRANS_B == 2 else ((v % (BLK_N // VEC)) * VEC)
+            var gc = block_col + c
+            var x = SIMD[DType.float16, VEC](0)
+            if ALIGNED == 1 or (r < K and gc + VEC <= N):
+                x = rebind[SIMD[DType.float16, VEC]](Bv[r, gc // VEC])
+            elif r < K:
+                comptime for i in range(VEC):
+                    if gc + i < N:
+                        x[i] = rebind[Scalar[DType.float16]](B[r, gc + i])
+            comptime for i in range(VEC):
+                stb[s * VEC + i] = x[i]
     comptime for s in range(A_PER):
         var v = tid + s * NTHREADS
         var r = v // KCH
@@ -154,27 +169,36 @@ def amar_matmul_wmma_pipe[
         sav[r, ca] = rebind[sav.ElementType](x)
     comptime for s in range(B_PER):
         var v = tid + s * NTHREADS
-        comptime if TRANS_B == 0:
-            var r = v // (BLK_N // VEC)
-            var c = (v % (BLK_N // VEC)) * VEC
+        comptime if TB == 1:
+            var rn = v // KCH
+            var kb = v % KCH
+            var g = ((rn >> 1) ^ (rn >> 3)) & (KCH - 1)
             var x = SIMD[DType.float16, VEC](0)
             comptime for i in range(VEC):
                 x[i] = stb[s * VEC + i]
-            sbv[r, c // VEC] = rebind[sbv.ElementType](x)
-        elif TRANS_B == 1:
-            var r = v // (BLK_N // VEC)
-            var c = (v % (BLK_N // VEC)) * VEC
-            comptime for i in range(VEC):
-                sb[c + i, r] = rebind[sb.ElementType](stb[s * VEC + i])
+            sbv[rn, kb ^ g] = rebind[sbv.ElementType](x)
         else:
-            var r = v % BLK_K
-            var c = (v // BLK_K) * VEC
-            comptime for i in range(VEC):
-                var nn = c + i
-                var g = ((nn >> 1) ^ (nn >> 3)) & (KCH - 1)
-                sb[nn, ((r // VEC) ^ g) * VEC + r % VEC] = rebind[sb.ElementType](
-                    stb[s * VEC + i]
-                )
+            comptime if TRANS_B == 0:
+                var r = v // (BLK_N // VEC)
+                var c = (v % (BLK_N // VEC)) * VEC
+                var x = SIMD[DType.float16, VEC](0)
+                comptime for i in range(VEC):
+                    x[i] = stb[s * VEC + i]
+                sbv[r, c // VEC] = rebind[sbv.ElementType](x)
+            elif TRANS_B == 1:
+                var r = v // (BLK_N // VEC)
+                var c = (v % (BLK_N // VEC)) * VEC
+                comptime for i in range(VEC):
+                    sb[c + i, r] = rebind[sb.ElementType](stb[s * VEC + i])
+            else:
+                var r = v % BLK_K
+                var c = (v // BLK_K) * VEC
+                comptime for i in range(VEC):
+                    var nn = c + i
+                    var g2 = ((nn >> 1) ^ (nn >> 3)) & (KCH - 1)
+                    sb[nn, ((r // VEC) ^ g2) * VEC + r % VEC] = rebind[sb.ElementType](
+                        stb[s * VEC + i]
+                    )
 
     var cur = 0
     var kt = 0
@@ -207,19 +231,34 @@ def amar_matmul_wmma_pipe[
                             sta[s * VEC + i] = x[i]
                     comptime for s in range(B_PER):
                         var v = tid + s * NTHREADS
-                        var r = (v % BLK_K) if TRANS_B == 2 else (v // (BLK_N // VEC))
-                        var c = ((v // BLK_K) * VEC) if TRANS_B == 2 else ((v % (BLK_N // VEC)) * VEC)
-                        var gr = next_k + r
-                        var gc = block_col + c
-                        var x = SIMD[DType.float16, VEC](0)
-                        if ALIGNED == 1 or (gr < K and gc + VEC <= N):
-                            x = rebind[SIMD[DType.float16, VEC]](Bv[gr, gc // VEC])
-                        elif gr < K:
+                        comptime if TB == 1:
+                            var rn = v // KCH
+                            var kc = (v % KCH) * VEC
+                            var grn = block_col + rn
+                            var gkc = next_k + kc
+                            var x = SIMD[DType.float16, VEC](0)
+                            if ALIGNED == 1 or (grn < N and gkc + VEC <= K):
+                                x = rebind[SIMD[DType.float16, VEC]](Bv[grn, gkc // VEC])
+                            elif grn < N:
+                                comptime for i in range(VEC):
+                                    if gkc + i < K:
+                                        x[i] = rebind[Scalar[DType.float16]](B[grn, gkc + i])
                             comptime for i in range(VEC):
-                                if gc + i < N:
-                                    x[i] = rebind[Scalar[DType.float16]](B[gr, gc + i])
-                        comptime for i in range(VEC):
-                            stb[s * VEC + i] = x[i]
+                                stb[s * VEC + i] = x[i]
+                        else:
+                            var r = (v % BLK_K) if TRANS_B == 2 else (v // (BLK_N // VEC))
+                            var c = ((v // BLK_K) * VEC) if TRANS_B == 2 else ((v % (BLK_N // VEC)) * VEC)
+                            var gr = next_k + r
+                            var gc = block_col + c
+                            var x = SIMD[DType.float16, VEC](0)
+                            if ALIGNED == 1 or (gr < K and gc + VEC <= N):
+                                x = rebind[SIMD[DType.float16, VEC]](Bv[gr, gc // VEC])
+                            elif gr < K:
+                                comptime for i in range(VEC):
+                                    if gc + i < N:
+                                        x[i] = rebind[Scalar[DType.float16]](B[gr, gc + i])
+                            comptime for i in range(VEC):
+                                stb[s * VEC + i] = x[i]
 
             comptime for ks in range(KSTEPS):
                 var bfr = SIMD[DType.float16, WTILE_N * 16](0)
@@ -336,27 +375,36 @@ def amar_matmul_wmma_pipe[
                     sav[nb * BLK_M + r, ca] = rebind[sav.ElementType](x)
                 comptime for s in range(B_PER):
                     var v = tid + s * NTHREADS
-                    comptime if TRANS_B == 0:
-                        var r = v // (BLK_N // VEC)
-                        var c = (v % (BLK_N // VEC)) * VEC
+                    comptime if TB == 1:
+                        var rn = v // KCH
+                        var kb = v % KCH
+                        var g = ((rn >> 1) ^ (rn >> 3)) & (KCH - 1)
                         var x = SIMD[DType.float16, VEC](0)
                         comptime for i in range(VEC):
                             x[i] = stb[s * VEC + i]
-                        sbv[nb * SB_H + r, c // VEC] = rebind[sbv.ElementType](x)
-                    elif TRANS_B == 1:
-                        var r = v // (BLK_N // VEC)
-                        var c = (v % (BLK_N // VEC)) * VEC
-                        comptime for i in range(VEC):
-                            sb[nb * SB_H + c + i, r] = rebind[sb.ElementType](stb[s * VEC + i])
+                        sbv[nb * SB_H + rn, kb ^ g] = rebind[sbv.ElementType](x)
                     else:
-                        var r = v % BLK_K
-                        var c = (v // BLK_K) * VEC
-                        comptime for i in range(VEC):
-                            var nn = c + i
-                            var g = ((nn >> 1) ^ (nn >> 3)) & (KCH - 1)
-                            sb[nb * SB_H + nn, ((r // VEC) ^ g) * VEC + r % VEC] = rebind[
-                                sb.ElementType
-                            ](stb[s * VEC + i])
+                        comptime if TRANS_B == 0:
+                            var r = v // (BLK_N // VEC)
+                            var c = (v % (BLK_N // VEC)) * VEC
+                            var x = SIMD[DType.float16, VEC](0)
+                            comptime for i in range(VEC):
+                                x[i] = stb[s * VEC + i]
+                            sbv[nb * SB_H + r, c // VEC] = rebind[sbv.ElementType](x)
+                        elif TRANS_B == 1:
+                            var r = v // (BLK_N // VEC)
+                            var c = (v % (BLK_N // VEC)) * VEC
+                            comptime for i in range(VEC):
+                                sb[nb * SB_H + c + i, r] = rebind[sb.ElementType](stb[s * VEC + i])
+                        else:
+                            var r = v % BLK_K
+                            var c = (v // BLK_K) * VEC
+                            comptime for i in range(VEC):
+                                var nn = c + i
+                                var g2 = ((nn >> 1) ^ (nn >> 3)) & (KCH - 1)
+                                sb[nb * SB_H + nn, ((r // VEC) ^ g2) * VEC + r % VEC] = rebind[
+                                    sb.ElementType
+                                ](stb[s * VEC + i])
             cur = 1 - cur
             kt = next_k
 
@@ -380,19 +428,34 @@ def amar_matmul_wmma_pipe[
                     sta1[s * VEC + i] = x[i]
             comptime for s in range(B_PER):
                 var v = tid + s * NTHREADS
-                var r = (v % BLK_K) if TRANS_B == 2 else (v // (BLK_N // VEC))
-                var c = ((v // BLK_K) * VEC) if TRANS_B == 2 else ((v % (BLK_N // VEC)) * VEC)
-                var gr = next_k + r
-                var gc = block_col + c
-                var x = SIMD[DType.float16, VEC](0)
-                if ALIGNED == 1 or (gr < K and gc + VEC <= N):
-                    x = rebind[SIMD[DType.float16, VEC]](Bv[gr, gc // VEC])
-                elif gr < K:
+                comptime if TB == 1:
+                    var rn = v // KCH
+                    var kc = (v % KCH) * VEC
+                    var grn = block_col + rn
+                    var gkc = next_k + kc
+                    var x = SIMD[DType.float16, VEC](0)
+                    if ALIGNED == 1 or (grn < N and gkc + VEC <= K):
+                        x = rebind[SIMD[DType.float16, VEC]](Bv[grn, gkc // VEC])
+                    elif grn < N:
+                        comptime for i in range(VEC):
+                            if gkc + i < K:
+                                x[i] = rebind[Scalar[DType.float16]](B[grn, gkc + i])
                     comptime for i in range(VEC):
-                        if gc + i < N:
-                            x[i] = rebind[Scalar[DType.float16]](B[gr, gc + i])
-                comptime for i in range(VEC):
-                    stb1[s * VEC + i] = x[i]
+                        stb1[s * VEC + i] = x[i]
+                else:
+                    var r = (v % BLK_K) if TRANS_B == 2 else (v // (BLK_N // VEC))
+                    var c = ((v // BLK_K) * VEC) if TRANS_B == 2 else ((v % (BLK_N // VEC)) * VEC)
+                    var gr = next_k + r
+                    var gc = block_col + c
+                    var x = SIMD[DType.float16, VEC](0)
+                    if ALIGNED == 1 or (gr < K and gc + VEC <= N):
+                        x = rebind[SIMD[DType.float16, VEC]](Bv[gr, gc // VEC])
+                    elif gr < K:
+                        comptime for i in range(VEC):
+                            if gc + i < N:
+                                x[i] = rebind[Scalar[DType.float16]](B[gr, gc + i])
+                    comptime for i in range(VEC):
+                        stb1[s * VEC + i] = x[i]
         var cached3_2 = False
         var bfr_cache_2 = SIMD[DType.float16, (KSTEPS * WTILE_N * 16) if ABL == 3 else 1](0)
         var a_cache_2 = SIMD[DType.float16, (KSTEPS * WTILE_M * 16) if ABL == 3 else 1](0)
@@ -426,19 +489,34 @@ def amar_matmul_wmma_pipe[
                                         sta[s * VEC + i] = x[i]
                                 comptime for s in range(B_PER):
                                     var v = tid + s * NTHREADS
-                                    var r = (v % BLK_K) if TRANS_B == 2 else (v // (BLK_N // VEC))
-                                    var c = ((v // BLK_K) * VEC) if TRANS_B == 2 else ((v % (BLK_N // VEC)) * VEC)
-                                    var gr = next_k + r
-                                    var gc = block_col + c
-                                    var x = SIMD[DType.float16, VEC](0)
-                                    if ALIGNED == 1 or (gr < K and gc + VEC <= N):
-                                        x = rebind[SIMD[DType.float16, VEC]](Bv[gr, gc // VEC])
-                                    elif gr < K:
+                                    comptime if TB == 1:
+                                        var rn = v // KCH
+                                        var kc = (v % KCH) * VEC
+                                        var grn = block_col + rn
+                                        var gkc = next_k + kc
+                                        var x = SIMD[DType.float16, VEC](0)
+                                        if ALIGNED == 1 or (grn < N and gkc + VEC <= K):
+                                            x = rebind[SIMD[DType.float16, VEC]](Bv[grn, gkc // VEC])
+                                        elif grn < N:
+                                            comptime for i in range(VEC):
+                                                if gkc + i < K:
+                                                    x[i] = rebind[Scalar[DType.float16]](B[grn, gkc + i])
                                         comptime for i in range(VEC):
-                                            if gc + i < N:
-                                                x[i] = rebind[Scalar[DType.float16]](B[gr, gc + i])
-                                    comptime for i in range(VEC):
-                                        stb[s * VEC + i] = x[i]
+                                            stb[s * VEC + i] = x[i]
+                                    else:
+                                        var r = (v % BLK_K) if TRANS_B == 2 else (v // (BLK_N // VEC))
+                                        var c = ((v // BLK_K) * VEC) if TRANS_B == 2 else ((v % (BLK_N // VEC)) * VEC)
+                                        var gr = next_k + r
+                                        var gc = block_col + c
+                                        var x = SIMD[DType.float16, VEC](0)
+                                        if ALIGNED == 1 or (gr < K and gc + VEC <= N):
+                                            x = rebind[SIMD[DType.float16, VEC]](Bv[gr, gc // VEC])
+                                        elif gr < K:
+                                            comptime for i in range(VEC):
+                                                if gc + i < N:
+                                                    x[i] = rebind[Scalar[DType.float16]](B[gr, gc + i])
+                                        comptime for i in range(VEC):
+                                            stb[s * VEC + i] = x[i]
 
                             else:
                                 comptime for s in range(A_PER):
@@ -458,19 +536,34 @@ def amar_matmul_wmma_pipe[
                                         sta1[s * VEC + i] = x[i]
                                 comptime for s in range(B_PER):
                                     var v = tid + s * NTHREADS
-                                    var r = (v % BLK_K) if TRANS_B == 2 else (v // (BLK_N // VEC))
-                                    var c = ((v // BLK_K) * VEC) if TRANS_B == 2 else ((v % (BLK_N // VEC)) * VEC)
-                                    var gr = next_k + r
-                                    var gc = block_col + c
-                                    var x = SIMD[DType.float16, VEC](0)
-                                    if ALIGNED == 1 or (gr < K and gc + VEC <= N):
-                                        x = rebind[SIMD[DType.float16, VEC]](Bv[gr, gc // VEC])
-                                    elif gr < K:
+                                    comptime if TB == 1:
+                                        var rn = v // KCH
+                                        var kc = (v % KCH) * VEC
+                                        var grn = block_col + rn
+                                        var gkc = next_k + kc
+                                        var x = SIMD[DType.float16, VEC](0)
+                                        if ALIGNED == 1 or (grn < N and gkc + VEC <= K):
+                                            x = rebind[SIMD[DType.float16, VEC]](Bv[grn, gkc // VEC])
+                                        elif grn < N:
+                                            comptime for i in range(VEC):
+                                                if gkc + i < K:
+                                                    x[i] = rebind[Scalar[DType.float16]](B[grn, gkc + i])
                                         comptime for i in range(VEC):
-                                            if gc + i < N:
-                                                x[i] = rebind[Scalar[DType.float16]](B[gr, gc + i])
-                                    comptime for i in range(VEC):
-                                        stb1[s * VEC + i] = x[i]
+                                            stb1[s * VEC + i] = x[i]
+                                    else:
+                                        var r = (v % BLK_K) if TRANS_B == 2 else (v // (BLK_N // VEC))
+                                        var c = ((v // BLK_K) * VEC) if TRANS_B == 2 else ((v % (BLK_N // VEC)) * VEC)
+                                        var gr = next_k + r
+                                        var gc = block_col + c
+                                        var x = SIMD[DType.float16, VEC](0)
+                                        if ALIGNED == 1 or (gr < K and gc + VEC <= N):
+                                            x = rebind[SIMD[DType.float16, VEC]](Bv[gr, gc // VEC])
+                                        elif gr < K:
+                                            comptime for i in range(VEC):
+                                                if gc + i < N:
+                                                    x[i] = rebind[Scalar[DType.float16]](B[gr, gc + i])
+                                        comptime for i in range(VEC):
+                                            stb1[s * VEC + i] = x[i]
 
                     comptime for ks in range(KSTEPS):
                         var bfr = SIMD[DType.float16, WTILE_N * 16](0)
@@ -587,27 +680,36 @@ def amar_matmul_wmma_pipe[
                                 sav[1 * BLK_M + r, ca] = rebind[sav.ElementType](x)
                             comptime for s in range(B_PER):
                                 var v = tid + s * NTHREADS
-                                comptime if TRANS_B == 0:
-                                    var r = v // (BLK_N // VEC)
-                                    var c = (v % (BLK_N // VEC)) * VEC
+                                comptime if TB == 1:
+                                    var rn = v // KCH
+                                    var kb = v % KCH
+                                    var g = ((rn >> 1) ^ (rn >> 3)) & (KCH - 1)
                                     var x = SIMD[DType.float16, VEC](0)
                                     comptime for i in range(VEC):
                                         x[i] = stb1[s * VEC + i]
-                                    sbv[1 * SB_H + r, c // VEC] = rebind[sbv.ElementType](x)
-                                elif TRANS_B == 1:
-                                    var r = v // (BLK_N // VEC)
-                                    var c = (v % (BLK_N // VEC)) * VEC
-                                    comptime for i in range(VEC):
-                                        sb[1 * SB_H + c + i, r] = rebind[sb.ElementType](stb1[s * VEC + i])
+                                    sbv[1 * SB_H + rn, kb ^ g] = rebind[sbv.ElementType](x)
                                 else:
-                                    var r = v % BLK_K
-                                    var c = (v // BLK_K) * VEC
-                                    comptime for i in range(VEC):
-                                        var nn = c + i
-                                        var g = ((nn >> 1) ^ (nn >> 3)) & (KCH - 1)
-                                        sb[1 * SB_H + nn, ((r // VEC) ^ g) * VEC + r % VEC] = rebind[
-                                            sb.ElementType
-                                        ](stb1[s * VEC + i])
+                                    comptime if TRANS_B == 0:
+                                        var r = v // (BLK_N // VEC)
+                                        var c = (v % (BLK_N // VEC)) * VEC
+                                        var x = SIMD[DType.float16, VEC](0)
+                                        comptime for i in range(VEC):
+                                            x[i] = stb1[s * VEC + i]
+                                        sbv[1 * SB_H + r, c // VEC] = rebind[sbv.ElementType](x)
+                                    elif TRANS_B == 1:
+                                        var r = v // (BLK_N // VEC)
+                                        var c = (v % (BLK_N // VEC)) * VEC
+                                        comptime for i in range(VEC):
+                                            sb[1 * SB_H + c + i, r] = rebind[sb.ElementType](stb1[s * VEC + i])
+                                    else:
+                                        var r = v % BLK_K
+                                        var c = (v // BLK_K) * VEC
+                                        comptime for i in range(VEC):
+                                            var nn = c + i
+                                            var g2 = ((nn >> 1) ^ (nn >> 3)) & (KCH - 1)
+                                            sb[1 * SB_H + nn, ((r // VEC) ^ g2) * VEC + r % VEC] = rebind[
+                                                sb.ElementType
+                                            ](stb1[s * VEC + i])
                         else:
                             comptime for s in range(A_PER):
                                 var v = tid + s * NTHREADS
@@ -622,27 +724,36 @@ def amar_matmul_wmma_pipe[
                                 sav[0 * BLK_M + r, ca] = rebind[sav.ElementType](x)
                             comptime for s in range(B_PER):
                                 var v = tid + s * NTHREADS
-                                comptime if TRANS_B == 0:
-                                    var r = v // (BLK_N // VEC)
-                                    var c = (v % (BLK_N // VEC)) * VEC
+                                comptime if TB == 1:
+                                    var rn = v // KCH
+                                    var kb = v % KCH
+                                    var g = ((rn >> 1) ^ (rn >> 3)) & (KCH - 1)
                                     var x = SIMD[DType.float16, VEC](0)
                                     comptime for i in range(VEC):
                                         x[i] = stb[s * VEC + i]
-                                    sbv[0 * SB_H + r, c // VEC] = rebind[sbv.ElementType](x)
-                                elif TRANS_B == 1:
-                                    var r = v // (BLK_N // VEC)
-                                    var c = (v % (BLK_N // VEC)) * VEC
-                                    comptime for i in range(VEC):
-                                        sb[0 * SB_H + c + i, r] = rebind[sb.ElementType](stb[s * VEC + i])
+                                    sbv[0 * SB_H + rn, kb ^ g] = rebind[sbv.ElementType](x)
                                 else:
-                                    var r = v % BLK_K
-                                    var c = (v // BLK_K) * VEC
-                                    comptime for i in range(VEC):
-                                        var nn = c + i
-                                        var g = ((nn >> 1) ^ (nn >> 3)) & (KCH - 1)
-                                        sb[0 * SB_H + nn, ((r // VEC) ^ g) * VEC + r % VEC] = rebind[
-                                            sb.ElementType
-                                        ](stb[s * VEC + i])
+                                    comptime if TRANS_B == 0:
+                                        var r = v // (BLK_N // VEC)
+                                        var c = (v % (BLK_N // VEC)) * VEC
+                                        var x = SIMD[DType.float16, VEC](0)
+                                        comptime for i in range(VEC):
+                                            x[i] = stb[s * VEC + i]
+                                        sbv[0 * SB_H + r, c // VEC] = rebind[sbv.ElementType](x)
+                                    elif TRANS_B == 1:
+                                        var r = v // (BLK_N // VEC)
+                                        var c = (v % (BLK_N // VEC)) * VEC
+                                        comptime for i in range(VEC):
+                                            sb[0 * SB_H + c + i, r] = rebind[sb.ElementType](stb[s * VEC + i])
+                                    else:
+                                        var r = v % BLK_K
+                                        var c = (v // BLK_K) * VEC
+                                        comptime for i in range(VEC):
+                                            var nn = c + i
+                                            var g2 = ((nn >> 1) ^ (nn >> 3)) & (KCH - 1)
+                                            sb[0 * SB_H + nn, ((r // VEC) ^ g2) * VEC + r % VEC] = rebind[
+                                                sb.ElementType
+                                            ](stb[s * VEC + i])
             kt += 2 * BLK_K
 
     comptime for tm in range(WTILE_M):
