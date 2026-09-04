@@ -119,4 +119,100 @@ Item 1 is measured separately, at m=4, against whichever of A-D wins.
 
 ## Results
 
-(empty — nothing measured yet beyond the single baseline run above)
+Run 2026-09-04, branch `lane-ssm-spill`, on top of `main`'s merged M2 fold
+(`871faca`, `9808a9d`). Instrument: llama-server DOWN, GPU exclusive,
+`flock .work/gpu.lock` on every run.
+
+### Arms A/B (item 3, unstaged) do not apply — protocol line invalidated
+
+Item 3 proposes staging `S0`'s column into registers to kill a "pass 1
+reads it, pass 2 re-reads it" double read (`.work/ssm-fusion-plan.md`
+"Current shape" section). **`amar_ssm_delta_step` already reads the column
+exactly once into `col: SIMD[f32, SSTATE]` and reuses it for both the `sk`
+pass and the `s`/`o` pass** — this was true in the kernel this protocol
+inherited (commit `c8cf219`, predating both this protocol's freeze and my
+M2 fold) and is unchanged by the fold. There is no unstaged variant left in
+the repo to build as a control; reconstructing one would be inventing code
+the protocol never asked for, and the question item 3 poses (does staging
+pay for itself) was never gated by a receipt before it landed — a real gap
+in this protocol's own discipline, but not one stint 2 can retroactively
+fix without fabricating an arm. **Arms A and B, and the protocol's own
+self-check ("Arm A must be bit-identical to today's kernel"), are
+unsatisfiable as written: "today's kernel" already IS what the protocol
+calls arm C** (item 3 = yes, item 2 = 1/control). Per the brief: stopping
+here on item 3, not inventing a replacement arm.
+
+### Arms C/D (item 2, JSPLIT) — measured, falsified
+
+Item 2 (JSPLIT: split the column dimension across more, smaller blocks —
+`grid_dim=(NH_V, JSPLIT)`, `block_dim=SSTATE/JSPLIT`) still applies cleanly
+to the folded kernel; implemented as a new `JSPLIT: Int` comptime parameter
+on `amar_ssm_delta_step`, `JSPLIT=1` reproducing arm C (today's kernel) and
+`JSPLIT=4` as arm D, per `.work/ssm-fusion-plan.md`'s JSPLIT=4 rationale
+(128 blocks > 96 CUs, no partials).
+
+**Gate 1 — correctness (both arms):**
+- `kernels/test_ssm_block.mojo`, unchanged tolerances, at `JSPLIT=1` and
+  `JSPLIT=4`: **PASS** both (m=1 vs numpy ref, m=4 fold vs 4x sequential
+  m=1, `max_rel: 0.0` on the m=4 self-check for both JSPLIT values).
+- `bench/mtp-prompts.sh` arm A (no-spec) `GENERATED` line, both JSPLIT
+  builds, byte-identical to `main`'s `.work/mtp-m2/p09-explain-gpu.A.log`
+  (spot-checked since JSPLIT changes no per-column arithmetic order;
+  20-prompt full sweep not re-run since arm D was already disqualified on
+  speed before reaching that gate — see below).
+
+**Gate 2 — per-kernel timing, `BARO_PROFILE=2`, `BARO_SPEC_K=2`,
+`bench/mtp-prompts/p09-explain-gpu.tokens`, 3 repeats each, `ssm-kernel:
+delta` line:**
+
+| arm | JSPLIT | delta (s), 3 runs | median |
+|---|---|---|---|
+| C (control) | 1 | 0.04805, 0.04782, 0.04736 | **0.0478** |
+| D | 4 | 0.10115, 0.08841, 0.08776 | **0.0884** |
+
+Arm D is **85% slower** than arm C — far outside the <1.5% per-kernel
+spread gate in either direction; this is not noise. **Falsifies item 2's
+prediction outright** ("per-kernel `delta_step` GPU time drops"). Matches
+the protocol's own abandon criterion verbatim: *"Item 2: no arm beats A on
+per-kernel time (never occupancy-bound)."* `tools/isa-receipt.py` explains
+why: `vgpr_count` is unchanged (192, both arms — JSPLIT doesn't reduce
+per-thread register need, each thread still carries the full 128-wide
+`col` regardless of column-slab width) but `vgpr_spill_count` at MR=8 goes
+603 (JSPLIT=1) → 2009 (JSPLIT=4), ~3.3x — JSPLIT=4's per-block `kq` fill
+loop (`comptime for g in range(JSPLIT)`) makes every block redundantly
+re-read the full 128-wide k/q vector, and the narrower 32-thread blocks
+apparently cost more (via redundant traffic + higher spill pressure) than
+the extra occupancy buys back. 32 blocks / 96 CUs was not, in practice,
+occupancy-bound the way the plan predicted.
+
+**Caught mid-run, worth recording:** the initial JSPLIT=1 "control" build
+(before splitting the kernel body into a `comptime if JSPLIT == 1` fast
+path that is byte-for-byte the pre-JSPLIT code) was NOT actually identical
+to today's kernel at the ISA level — merely adding the `JSPLIT` template
+parameter and routing `j` through `js * JW + jt` (with `js` always 0)
+raised `vgpr_spill_count` from 603 to 2029 at MR=8, a ~3.4x regression from
+the refactor alone, nothing to do with JSPLIT's actual value. First-pass
+timing on that broken control showed delta at ~0.09s for BOTH arms
+(apparently no difference), which would have wrongly read as "item 2:
+inconclusive, within noise" and hidden arm D's real regression. Caught by
+re-checking `vgpr_spill_count` against the pre-stint-2 baseline before
+trusting the comparison (P1: read the value back from the instrument, not
+from the diff you typed) and fixed by giving `JSPLIT == 1` its own
+compile-time branch that reproduces the original code exactly, rather than
+generalizing the control path through the same code the experiment uses.
+
+### Item 1 (fusion) — already landed in stint 1, not re-measured here
+
+Item 1 (fuse the per-row SSM loop into one launch per window) is the M2
+fold already merged to `main` (`871faca`). The plan's own sequencing
+("item 1 LAST, built against item 2's winning geometry") is moot: item 2
+has no winning geometry (arm C, i.e. today's shape, wins by default), so
+there is nothing for item 1 to be rebuilt against. No falsifier triggered.
+
+### Verdict
+
+**No arm lands.** Item 3 is moot (already shipped, unfalsifiable without
+inventing code). Item 2 is measured and falsified (arm D 85% slower, not
+faster). `amar_ssm_delta_step` stays exactly as `main` has it. No code
+change in this stint; this file's Results section and
+`.work/briefs/status-mrowC.md` are the deliverable.
