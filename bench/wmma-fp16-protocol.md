@@ -402,3 +402,15 @@ Raising wave priority around the mma block starves the sibling waves' loads
 on the same SIMD: the K-step is issue-bound on LDS/VALU, not on mma
 arbitration. The knob stays at PRIO=0 (ISA-identical to before, receipt
 checked by lane A).
+
+**Round 7, levers 1.5 and 1.2 -- frozen BEFORE building** (2026-09-04, from
+`.work/isa/champion-4096/DIET-SGB.md`): per K-step the champion issues 42
+VALU+SALU (excluding 9 s_waitcnt, 9 s_delay_alu); 16 of them are per-lane
+loop-invariant swizzle/index math written inside the loop body and NOT
+hoisted by the compiler, 8 are loop-carried pointer updates, 4 fragment
+packing, 14 other.
+
+| lever | knob | prediction @4096^3 | keep floor | fail rule |
+|---|---|---|---|---|
+| 1.5 address diet | `HOIST=1`: lane constants computed once above the K-loop | +1.5-4% (16 fewer ALU per 16 wmma; clock may rise) and ISA receipt shows class (a) = 0 | >= +1% disjoint AND receipt class (a) = 0 | receipt still shows the math in the loop -> compiler re-materialised, rejected |
+| 1.2 SGB | `SGB=1`: schedule_group_barrier sequence from DIET-SGB.md §2 | +0-3% (hint only; cannot reduce instruction count) | >= +1% disjoint | two builds < +1% -> rejected |
