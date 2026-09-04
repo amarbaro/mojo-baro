@@ -71,3 +71,40 @@ defect as an unfrozen prediction.
 Record, in the protocol's Result/Verdict section: what was checked, where the
 value was read from, and the observed value. A verdict without its receipt is
 incomplete and may not be promoted to "the bar".
+
+## P4. Decode and speculation claims come from the prompt set, never one prompt
+
+Any tok/s, speedup or acceptance number quoted as "ours" or "the bar" is the
+median over `bench/mtp-prompts/` (20 prompts, `bench/mtp-prompts.sh`), with
+the min-max range beside it, and the competitor measured on the same set in
+the same session (`tools/llama-mtp-prompts.sh`). A single-prompt run is an
+instrument receipt or a bug-isolation probe; it may appear in a protocol as
+such, never in README or a verdict line.
+
+Why: 2026-09-04 the MTP loop was reported at 128 tok/s and 1.17x llama.cpp
+from the 5-token race prompt (94% acceptance). On 20 prompts it was 82 and
+0.66x. Both numbers were correct; only one described the engine.
+
+## P5. Every kernel run at m > 1 carries a row-scaling receipt
+
+Before a kernel is dispatched at m > 1 on a timed path (prefill, speculative
+window), the cold-cache bench records its cost at m = 1, 2, 4, 8 on the ffn
+shape, and the m-row / 1-row ratio is in the landing commit. A ratio above
+1.25x at m = 4 on a bandwidth-bound shape is a defect to fix or a documented
+falsifier, not a property to live with.
+
+Why: the q8row kernel's m > 1 path shipped inside the q8 round on the m = 1
+receipt alone. It cost 8x per window (runtime-indexed accumulators), then
+2.9x (8-row template with half-width loads), and every MTP number sat on it
+for a day.
+
+## P6. Profile the harness before the kernel
+
+When a sweep's wall time is more than 2x its summed GPU time, or a run prints
+a load/setup time above 10% of its total, the harness (loader, host copies,
+per-window synchronizes) is profiled and fixed before any kernel is touched.
+Run receipts include `pack loaded in` next to `tok/s_gen`.
+
+Why: the engine loader copied 10.7 GB with a per-byte loop, 12.6 s of every
+17 s run; a 100-run sweep cost 30 min and a whole optimisation stint was
+planned around waiting for it. memcpy: 1.8 s.
