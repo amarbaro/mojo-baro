@@ -165,6 +165,21 @@ def gemm_q8[
             A, Wq, Ws, P, Int32(m), Int32(n), Int32(k),
             grid_dim=ceildiv(n, ROW_WAVES), block_dim=ROW_THREADS,
         )
+    elif m == 2:
+        ctx.enqueue_function[amar_matmul_skinny_q8row[4, 2, AL, QL, SL, PL]](
+            A, Wq, Ws, P, Int32(m), Int32(n), Int32(k),
+            grid_dim=ceildiv(n, ROW_WAVES), block_dim=ROW_THREADS,
+        )
+    elif m == 3:
+        ctx.enqueue_function[amar_matmul_skinny_q8row[4, 3, AL, QL, SL, PL]](
+            A, Wq, Ws, P, Int32(m), Int32(n), Int32(k),
+            grid_dim=ceildiv(n, ROW_WAVES), block_dim=ROW_THREADS,
+        )
+    elif m <= 5:
+        ctx.enqueue_function[amar_matmul_skinny_q8row[4, 5, AL, QL, SL, PL]](
+            A, Wq, Ws, P, Int32(m), Int32(n), Int32(k),
+            grid_dim=ceildiv(n, ROW_WAVES), block_dim=ROW_THREADS,
+        )
     else:
         ctx.enqueue_function[amar_matmul_skinny_q8row[4, SM, AL, QL, SL, PL]](
             A, Wq, Ws, P, Int32(m), Int32(n), Int32(k),

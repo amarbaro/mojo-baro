@@ -276,7 +276,7 @@ def amar_matmul_skinny_q8row[
     if row >= N:
         return
 
-    comptime QV = 16 if MR == 1 else 8
+    comptime QV = 16 if MR <= 5 else 8
     comptime STEP = WARP_SIZE * QV
     var Qv = Q.vectorize[1, QV]()
     var Av = A.vectorize[1, QV]()

@@ -308,7 +308,7 @@ def main() raises:
             prompt.append(val)
     print("prompt tokens:", len(prompt))
 
-    var kcfg = 4
+    var kcfg = 2
     try:
         with open(packdir + "/spec-k.txt", "r") as f:
             var kd = f.read_bytes()
@@ -324,7 +324,7 @@ def main() raises:
             if kh:
                 kcfg = kv_
     except:
-        kcfg = 4
+        kcfg = 2
     var kenv = getenv("BARO_SPEC_K", "")
     if kenv != "":
         kcfg = atol(kenv)

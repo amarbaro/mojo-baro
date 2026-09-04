@@ -190,3 +190,43 @@ Two bugs found on the way, both would have voided the run:
    dynamic-indexing the accumulator array into scratch: a 5-row window
    cost ~8x a 1-row pass (first arm B: 31.9 tok/s, falsifier fired).
    Compile-time `MR` loop with `r < M` guard; prefill 0.116 -> 0.046 s.
+
+## Result 2 (2026-09-04, real prompts, k sweep, llama.cpp head-to-head)
+
+Not preregistered; recorded because the 5-token number above does not
+generalise. Set: `bench/mtp-prompts/` (20 prompts, 7-59 tokens, tokenized
+by the model's own tokenizer), 64 greedy tokens each, one run per arm
+(single runs: this is a ranking, not a claim). Identity gate = arm B
+`GENERATED` equal to arm A's; passed 100/100 runs. Logs `.work/mtp-final/`,
+llama.cpp `.work/llama-mtp-prompts/`.
+
+Two engine fixes landed between the first real-prompt run and this table
+(commit after this section): the batched q8row GEMM is now instantiated
+at the window's actual row count (2, 3, 5) instead of the 8-row template,
+and keeps 16-wide loads for those sizes. First run, k=4: median 82.2
+(1.19x), two prompts below 1.0x. After: table below.
+
+| k | median tok/s_gen | median B/A | min-max | median acceptance |
+|---|---|---|---|---|
+| A (no spec) | 68.3 | | | |
+| 1 | 98.2 | 1.43x | 1.22-1.53 | 85% |
+| **2** | **100.7** | **1.47x** | 1.20-1.80 | 69% |
+| 3 | 94.7 | 1.39x | 1.03-1.84 | 58% |
+| 4 | 92.4 | 1.35x | 0.90-1.85 | 51% |
+
+Default k moves from 4 to 2 (`spec-k.txt`, `BARO_SPEC_K`). k=4 stays
+better only on code/list/number prompts (p02, p04, p19, p20). The
+5-token race prompt on this tree: k=4 145.6, k=2 125.8.
+
+llama.cpp Q8_0 on the same prompts (`tools/llama-mtp-prompts.sh`, draft
+n-max 4): no-spec 74.1, MTP median 123.5, ratio 1.66x, acceptance 58%,
+and its speculative output differs from its own greedy output on 4/20
+prompts. Ours at k=2: 100.7, ahead on 2/20 prompts, median 0.78x of
+llama.cpp MTP. Verdict for the README: ahead on the preregistered
+5-token race (145.6 vs 109.8), behind on real text (100.7 vs 123.5).
+
+Where the remaining gap is (profile on p09, BARO_PROFILE=1): draft path
+~2 ms/window; a 2-row trunk window still costs ~1.28x a 1-row pass
+(bandwidth model says ~1.05x). SSM sub-block is per-row serial (5
+launches x 24 layers per extra row); multi-row GEMM at QV=16 not yet
+at the m=1 stream rate. Both are the next MTP levers, before q4.

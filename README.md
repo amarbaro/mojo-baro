@@ -137,16 +137,18 @@ through an HTTP server while ours is measured in-process.
 k=4, draft = the model's own `blk.32` NextN head, verified in one k+1-row
 trunk window, greedy accept, output still bit-identical to the no-spec run):
 
-| | tok/s | vs no-spec |
+| | 5-token race prompt | 20 real prompts (median) |
 |---|---|---|
-| llama.cpp Q8_0, MTP speculative | 109.8 | 1.48x |
-| **mojo-baro q8 MTP `tok/s_gen`** | **128.0** (127.6–128.0, 0.3% spread) | 1.89x |
+| llama.cpp Q8_0, MTP speculative | 109.8 | 123.5 |
+| **mojo-baro q8 MTP `tok/s_gen`** | **145.6** (k=4) | **100.7** (k=2) |
+| mojo-baro / llama.cpp | 1.33x | 0.78x |
 
-So with speculation the engine decodes at **1.17x llama.cpp** on the same
-card, same GGUF, same quant, same tokens. Caveats that stay attached to
-that number: one 5-token prompt, 64 greedy tokens, acceptance 50/53 on a
-repetitive tail; per-prompt acceptance on a real prompt set is in
-`bench/mtp-protocol.md` as it lands.
+Both engines produce the no-spec greedy tokens under speculation on the
+race prompt; on the 20-prompt set ours is identical on 20/20, llama.cpp's
+on 16/20. So: ahead on the preregistered race, behind on real text, where
+llama.cpp's draft loop turns 58% acceptance into 1.66x and ours turns 69%
+into 1.47x. The per-prompt tables, the k sweep and where the gap sits are
+in `bench/mtp-protocol.md` Result 2.
 
 ## Layout
 
