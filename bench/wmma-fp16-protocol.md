@@ -298,3 +298,21 @@ commit 9ac5f3a/73adaba (tooling only, kernel untouched). Power cap read back:
 Every fp16 number from here is quoted as a fraction of R with sclk_med and
 FLOP/clk/CU beside it; target for the levers of Phase 1-3 is >= 0.90 R at
 2048^3/3072^3/4096^3.
+
+**Round 6 result, step 0.2** (2026-09-04, llama-server resident and idle,
+`.work/r6/race-0.2-4096.log`, all arms `correct: true`):
+
+| arm | median GFLOP/s (min-max, 5) | sclk_med | FLOP/clk/CU | power |
+|---|---|---|---|---|
+| hipBLASLt NN | 82375 (81580-82842) | 2870-2913 MHz | 293-299 | 273-330 W |
+| ours 128x128 8-wave | 89500 (89228-90354) | 2603-2619 MHz | 355-362 | 277-317 W |
+
+Prediction 92-98k missed low (89.5k) with a 1.3% spread; the templates-table
+record (90.7-98.0k) was taken with llama-server killed, so this is the
+resident-idle number and the two are not the same arm. The sclk-vs-gflops
+correlation test is moot at this spread (sclk 2603-2619, 0.6%). What the
+receipt does establish: at the same power cap the vendor kernel holds
+2.9 GHz and ours 2.6 GHz, i.e. ours draws more energy per clock and is
+throttled 10% deeper; ours does 356 FLOP/clk/CU = 70% of the 512 peak, the
+vendor 296 = 58%. The clock deficit is the round-5 diagnosis confirmed under
+protocol: the lever is energy per FLOP, not overlap.
