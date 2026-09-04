@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Discussion / question about the numbers
+    url: https://github.com/amarbaro/mojo-baro/discussions
+    about: For anything that is not a hardware report or a bug.

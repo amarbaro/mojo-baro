@@ -1,0 +1,225 @@
+{
+  "schema": "mojo-baro/fp16-gemm-report/1",
+  "commit": "bdf254f",
+  "dirty": "",
+  "mojo": "Mojo 1.0.0 (ed45d567)",
+  "env": {
+    "gpu": "AMD Radeon RX 7900 XTX",
+    "gfx": "gfx1100",
+    "compute_units": 96,
+    "wavefront": 32,
+    "max_clock_mhz": 2371,
+    "gpu_count": 1,
+    "rocm": "7.2.4",
+    "hipblaslt": "libhipblaslt.so.1.2",
+    "state": {
+      "temp_c": 51.0,
+      "sclk_mhz": 67,
+      "power_w": 36.0
+    }
+  },
+  "state_after": {
+    "temp_c": 58.0,
+    "sclk_mhz": 113,
+    "power_w": 49.0
+  },
+  "valid": true,
+  "problems": [],
+  "sizes": [
+    {
+      "size": 512,
+      "ours_gflops": 31786.129863055874,
+      "hipblaslt_gflops": 26089.02491056165,
+      "ratio": 1.218371708870877,
+      "ours": {
+        "variant": "wmma_pipe_fp16",
+        "m": 512,
+        "n": 512,
+        "k": 512,
+        "ms": 0.008445049999999999,
+        "gflops": 31786.129863055874,
+        "correct": true,
+        "max_err": 1.4185905456542969e-05,
+        "iters": 200,
+        "warmup_s": 10.0,
+        "pgr": 2,
+        "lb": 0,
+        "abl": 0,
+        "prio": 0,
+        "tb": 0,
+        "hoist": 0,
+        "sgb": 0,
+        "tile": 16,
+        "dtype": "float16",
+        "blk": [
+          64,
+          64,
+          32
+        ],
+        "warps": [
+          2,
+          2
+        ],
+        "wtile": [
+          2,
+          2
+        ],
+        "grid": [
+          8,
+          8
+        ],
+        "block": 128
+      },
+      "hipblaslt": {
+        "variant": "hipblaslt_fp16",
+        "m": 512,
+        "n": 512,
+        "k": 512,
+        "ms": 0.01028921,
+        "gflops": 26089.02491056165,
+        "correct": true,
+        "max_err": 0.0,
+        "algo_count": 32,
+        "algo_chosen": 21,
+        "splitk": 1,
+        "wgm": 1,
+        "iters": 200,
+        "warmup_s": 10.0,
+        "opb": 0,
+        "dtype": "float16",
+        "c_dtype": "float16",
+        "gate": "err<=1.0: fp16 C, |sum|<=4096 has ulp 2"
+      }
+    },
+    {
+      "size": 2048,
+      "ours_gflops": 93145.52268346596,
+      "hipblaslt_gflops": 81484.31006714063,
+      "ratio": 1.1431099141260057,
+      "ours": {
+        "variant": "wmma_pipe_fp16",
+        "m": 2048,
+        "n": 2048,
+        "k": 2048,
+        "ms": 0.18444117,
+        "gflops": 93145.52268346596,
+        "correct": true,
+        "max_err": 4.76837158203125e-07,
+        "iters": 200,
+        "warmup_s": 10.0,
+        "pgr": 2,
+        "lb": 0,
+        "abl": 0,
+        "prio": 0,
+        "tb": 0,
+        "hoist": 0,
+        "sgb": 0,
+        "tile": 16,
+        "dtype": "float16",
+        "blk": [
+          128,
+          128,
+          32
+        ],
+        "warps": [
+          4,
+          2
+        ],
+        "wtile": [
+          2,
+          4
+        ],
+        "grid": [
+          16,
+          16
+        ],
+        "block": 256
+      },
+      "hipblaslt": {
+        "variant": "hipblaslt_fp16",
+        "m": 2048,
+        "n": 2048,
+        "k": 2048,
+        "ms": 0.21083653000000002,
+        "gflops": 81484.31006714063,
+        "correct": true,
+        "max_err": 0.0,
+        "algo_count": 32,
+        "algo_chosen": 10,
+        "splitk": 1,
+        "wgm": 1,
+        "iters": 200,
+        "warmup_s": 10.0,
+        "opb": 0,
+        "dtype": "float16",
+        "c_dtype": "float16",
+        "gate": "err<=1.0: fp16 C, |sum|<=4096 has ulp 2"
+      }
+    },
+    {
+      "size": 4096,
+      "ours_gflops": 90562.75320246113,
+      "hipblaslt_gflops": 82495.51893701938,
+      "ratio": 1.0977899693145832,
+      "ours": {
+        "variant": "wmma_pipe_fp16",
+        "m": 4096,
+        "n": 4096,
+        "k": 4096,
+        "ms": 1.5176101499999999,
+        "gflops": 90562.75320246113,
+        "correct": true,
+        "max_err": 0.0002231597900390625,
+        "iters": 200,
+        "warmup_s": 10.0,
+        "pgr": 2,
+        "lb": 0,
+        "abl": 0,
+        "prio": 0,
+        "tb": 0,
+        "hoist": 0,
+        "sgb": 0,
+        "tile": 16,
+        "dtype": "float16",
+        "blk": [
+          128,
+          128,
+          32
+        ],
+        "warps": [
+          4,
+          2
+        ],
+        "wtile": [
+          2,
+          4
+        ],
+        "grid": [
+          32,
+          32
+        ],
+        "block": 256
+      },
+      "hipblaslt": {
+        "variant": "hipblaslt_fp16",
+        "m": 4096,
+        "n": 4096,
+        "k": 4096,
+        "ms": 1.6660172,
+        "gflops": 82495.51893701938,
+        "correct": true,
+        "max_err": 1.0,
+        "algo_count": 32,
+        "algo_chosen": 0,
+        "splitk": 1,
+        "wgm": 1,
+        "iters": 200,
+        "warmup_s": 10.0,
+        "opb": 0,
+        "dtype": "float16",
+        "c_dtype": "float16",
+        "gate": "err<=1.0: fp16 C, |sum|<=4096 has ulp 2"
+      }
+    }
+  ]
+}

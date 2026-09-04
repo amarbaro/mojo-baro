@@ -196,6 +196,24 @@ warp size **32**, not 64 as on CDNA; 64 KB LDS per block; tile and CPT
 parameters swept for this memory system. None of the results should be assumed
 to transfer to gfx942/gfx950 or to NVIDIA without re-sweeping.
 
+That includes other RDNA3 cards. An RX 7900 XT is the same `gfx1100` target and
+the same ISA, so the kernels build and run unchanged, but it has 84 compute
+units instead of 96 and 80 MB of Infinity Cache instead of 96 MB — enough to
+move the tile-dispatch thresholds, which were swept to fill this card.
+
+If you have an AMD GPU and fifteen minutes, `bench/report.sh` produces a
+receipt for the fp16 GEMM kernel against hipBLASLt on your machine. It needs no
+model weights:
+
+```sh
+./bench/report.sh --check   # preflight: GPU, ROCm, hipBLASLt, toolchain
+./bench/report.sh           # ~15 min; writes results/report-<gfx>-<card>-<commit>.json
+```
+
+Send it in via the [hardware report issue
+template](.github/ISSUE_TEMPLATE/hardware-report.yml) — including when it fails.
+Details in [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## License
 
 Apache-2.0 — see [LICENSE](LICENSE). Copyright 2026 AmarBaro Labs.

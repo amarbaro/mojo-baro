@@ -1,0 +1,63 @@
+name: Hardware report
+description: Run the fp16 GEMM benchmark on your AMD card and send the receipt
+title: "[hw] <your GPU> — fp16 GEMM report"
+labels: ["hardware-report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for running this. Every number in this repo was measured on a
+        single RX 7900 XTX, so a receipt from any other card is the most useful
+        thing anyone can contribute right now.
+
+        ```sh
+        uv sync
+        ./bench/report.sh --check     # preflight; fails fast if ROCm is missing
+        ./bench/report.sh             # ~15 minutes, needs no model weights
+        ```
+
+        Paste the markdown block it prints below, and attach the JSON file it
+        names. **A run that fails or reports wrong numbers is still worth
+        filing** — that is a result, not a wasted afternoon.
+  - type: textarea
+    id: report
+    attributes:
+      label: Report
+      description: The markdown block printed by bench/report.sh, pasted as-is.
+      placeholder: |
+        ## AMD Radeon RX 7900 XT (gfx1100, 84 CU)
+        ...
+      render: markdown
+    validations:
+      required: true
+  - type: input
+    id: receipt
+    attributes:
+      label: Receipt file
+      description: >
+        Drag the results/report-*.json file into this issue and paste the link,
+        or write "attached". It carries the per-size tile parameters we need to
+        interpret an unexpected number.
+    validations:
+      required: true
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: Outcome
+      options:
+        - Ran clean, receipt valid
+        - Ran, but the receipt reported problems
+        - Failed to build
+        - Failed at runtime
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything unusual
+      description: >
+        Errors, a card that throttled, a non-default cooling or power setup, a
+        distro-packaged ROCm rather than AMD's. Anything that would change how
+        we read the numbers.
+    validations:
+      required: false
