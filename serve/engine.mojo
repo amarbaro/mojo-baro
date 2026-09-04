@@ -9,6 +9,7 @@ greedy token ids.
 Parity target: byte-identical token ids vs llama.cpp on the same GGUF.
 """
 from std.math import ceildiv
+from std.memory import memcpy
 from std.os import getenv
 from std.sys import has_accelerator
 from std.time import perf_counter_ns
@@ -275,17 +276,11 @@ def main() raises:
             var data = f.read_bytes(want)
             if len(data) != want:
                 raise Error("short read")
-            var sp = stage.unsafe_ptr()
-            for i in range(want):
-                sp[unsafe_offset=i] = data[i]
             var dslice = DeviceBuffer[DType.uint8](
                 ctx, wbuf.unsafe_ptr() + done, want, owning=False
             )
             var hslice = ctx.enqueue_create_host_buffer[DType.uint8](want) if want != CHUNK else stage
-            if want != CHUNK:
-                var hp = hslice.unsafe_ptr()
-                for i in range(want):
-                    hp[unsafe_offset=i] = data[i]
+            memcpy(dest=hslice.unsafe_ptr(), src=data.unsafe_ptr(), count=want)
             ctx.enqueue_copy(dst_buf=dslice, src_buf=hslice)
             ctx.synchronize()
             done += want
