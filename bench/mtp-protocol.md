@@ -125,3 +125,43 @@ MTP result.
 the correctness precondition passes and the instrument above executes
 exactly as specified. No prose, no number, no verdict belongs here
 until then.**
+
+## Amendment 2026-09-04 (frozen before the draft loop is written, tree 87e0f81)
+
+Base has moved: the engine is q8-only at **68.77 tok/s_gen** (`q8-protocol.md`),
+64/64 identical to llama.cpp Q8_0 and bf16. Arm A = that binary/pack. Arm B
+= same binary with `BARO_SPEC=1`, draft window k from `spec-k.txt` (4).
+The correctness precondition of this file was met on 2026-09-01 (draft head
+argmax and logits validated vs llama.cpp, `tools/draft-ref.py`); the DRAFT
+line still prints `from_token 369 draft_argmax 369` on the q8 engine.
+
+Design (mirrors `common/speculative.cpp` process/draft/accept, greedy):
+- State per iteration: `pos` = last known token; trunk ring/KV valid through
+  `pos-1`; `Hnm` rows hold the trunk's post-output-norm hidden for the last
+  window; draft KV (`kc32/vc32`) valid through the previous iteration.
+- **process**: one blk.32 pass, M = tokens not yet in the draft KV with
+  truth h (token p pairs with h(p-1)): after prefill the P-1 prompt tokens,
+  later the n_acc+1 accepted+bonus tokens. Its last row IS draft step 0:
+  argmax -> d1, its own post-shared-head-norm hidden -> h for step 1.
+- **draft**: k-1 further M=1 blk.32 passes at pos+j with (d_j, draft h_{j-1}).
+- **verify**: trunk window M = min(k+1, remaining) rows at pos..pos+k over
+  [Toks[pos], d1..dk]; argmax into `dtok_d`, host compares, n_acc = leading
+  matches, bonus = argmax(row n_acc) written to Toks[pos+n_acc+1]; ring and
+  pos advance by n_acc+1. Rejected rows' trunk KV / ring slots / draft KV are
+  overwritten by the next window, never read.
+- Greedy verification accepts iff equal, so the 64 tokens are identical to
+  arm A by construction; any drift voids the run (claim rule unchanged).
+
+Byte model per iteration at k=4, 84% acceptance (llama.cpp's rate):
+verify 10.7 GB + process ~0.2 GB + LM head x4 (1.06 GB each) + 3 draft
+bodies x 0.2 GB ~= 15.7 GB for ~4.4 tokens -> 3.6 GB/token vs 10.7 today.
+
+| prediction | value | rule |
+|---|---|---|
+| acceptance (drafted->accepted) | 60-85% (unchanged) | recorded |
+| arm B / arm A | **1.6x-2.4x** (110-165 tok/s_gen) | land >= 1.5x AND 64/64 AND spread < 5% |
+| falsifier | < 1.3x: stop, diagnose, re-preregister | |
+
+Both arms 5 repeats, discard first, median of 4; server down; `BARO_SPEC`
+and `spec k` printed by the run are the P1 receipts, plus per-run
+`drafted/accepted` counts.
