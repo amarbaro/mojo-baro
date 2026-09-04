@@ -387,3 +387,18 @@ target restated per column:
   issue and the rest LDS/VALU/barrier issue (levers 1.1, 1.2, 1.3b, 2.1);
 - memory skeleton 0.667 ms = 61% of full time, so overlap is far from the
   point where the loads would be the floor.
+
+**Round 7 result, lever 1.1 PRIO** (2026-09-04, commit 0b7ec7b, 5 probed
+rounds, `.work/r6/race-1.1-{4096,2048}.log`, all `correct: true`):
+
+| size | abl0 median (min-max) | prio1 median (min-max) | delta |
+|---|---|---|---|
+| 4096^3 | 88950 (88822-89658) | 85792 (85275-85939) | -3.5%, disjoint |
+| 2048^3 | 91673 (88062-91971) | 88712 (88632-89109) | -3.2% |
+
+**Rejected on the first build** (floor was >= +1%; the range is disjoint on
+the wrong side, so the second build allowed by the rule is not spent).
+Raising wave priority around the mma block starves the sibling waves' loads
+on the same SIMD: the K-step is issue-bound on LDS/VALU, not on mma
+arbitration. The knob stays at PRIO=0 (ISA-identical to before, receipt
+checked by lane A).
