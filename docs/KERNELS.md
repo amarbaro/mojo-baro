@@ -16,6 +16,7 @@ must be reachable from `serve/registry.mojo`, a bench, or a test.
 | `amar_argmax_row` | `elementwise.mojo` | `XLayout: TensorLayout, OLayout: TensorLayout` |  | kernels/test_elementwise.mojo |
 | `amar_embed_lookup` | `elementwise.mojo` | `TLayout: TensorLayout, OLayout: TensorLayout` |  | kernels/test_elementwise.mojo |
 | `amar_embed_lookup_pos` | `elementwise.mojo` | `TLayout: TensorLayout, OLayout: TensorLayout, KLayout: TensorLayout` | embed_k, embed1_k | serve/registry.mojo |
+| `amar_quantize_q8_rows` | `elementwise.mojo` | `ALayout: TensorLayout, QLayout: TensorLayout, SLayout: TensorLayout` |  | bench/bench_coldcache_mrow.mojo |
 | `amar_rmsnorm` | `elementwise.mojo` | `XLayout: TensorLayout, GLayout: TensorLayout, OLayout: TensorLayout` | rms_m, rms_h2 | serve/registry.mojo, kernels/test_attn_block.mojo, kernels/test_elementwise.mojo, kernels/test_ssm_block.mojo |
 | `amar_rmsnorm_cast` | `elementwise.mojo` | `XLayout: TensorLayout, GLayout: TensorLayout, OLayout: TensorLayout` | rmsc_k, rmsc_h2 | serve/registry.mojo |
 | `amar_rope_rows` | `elementwise.mojo` | `XLayout: TensorLayout` |  | kernels/test_elementwise.mojo |
@@ -31,8 +32,10 @@ must be reachable from `serve/registry.mojo`, a bench, or a test.
 | `amar_matmul_skinny` | `matmul_skinny.mojo` | `in_dtype: DType, ALayout: TensorLayout, BLayout: TensorLayout, PLayout: TensorLayout` |  | bench/bench_coldcache.mojo, bench/bench_decode.mojo, kernels/test_attn_block.mojo, kernels/test_gguf_gemm.mojo, kernels/test_q8_gemm.mojo, kernels/test_ssm_block.mojo |
 | `amar_matmul_skinny_m1` | `matmul_skinny.mojo` | `in_dtype: DType, CPT: Int, ALayout: TensorLayout, BLayout: TensorLayout, PLayout: TensorLayout` |  | bench/bench_coldcache_m1.mojo, bench/bench_coldcache_q8row.mojo, bench/bench_coldcache_row.mojo |
 | `amar_matmul_skinny_m1_row` | `matmul_skinny.mojo` | `in_dtype: DType, UNROLL: Int, ALayout: TensorLayout, WLayout: TensorLayout, OLayout: TensorLayout` |  | bench/bench_coldcache_q8row.mojo, bench/bench_coldcache_row.mojo |
+| `amar_matmul_skinny_q4row` | `matmul_skinny.mojo` | `UNROLL: Int, MR: Int, ALayout: TensorLayout, QLayout: TensorLayout, SLayout: TensorLayout, PLayout: TensorLayout` |  | serve/registry.mojo, bench/bench_coldcache_mrow.mojo |
 | `amar_matmul_skinny_q8b` | `matmul_skinny.mojo` | `ALayout: TensorLayout, QLayout: TensorLayout, SLayout: TensorLayout, PLayout: TensorLayout` |  | bench/bench_coldcache.mojo, kernels/test_q8_gemm.mojo |
-| `amar_matmul_skinny_q8row` | `matmul_skinny.mojo` | `UNROLL: Int, MR: Int, ALayout: TensorLayout, QLayout: TensorLayout, SLayout: TensorLayout, PLayout: TensorLayout` | gemm_q8 dispatch | serve/registry.mojo, bench/bench_coldcache_q8row.mojo |
+| `amar_matmul_skinny_q8dot` | `matmul_skinny.mojo` | `UNROLL: Int, MR: Int, AQLayout: TensorLayout, ASLayout: TensorLayout, QLayout: TensorLayout, SLayout: TensorLayout, PLayout: TensorLayout` |  | bench/bench_coldcache_mrow.mojo |
+| `amar_matmul_skinny_q8row` | `matmul_skinny.mojo` | `UNROLL: Int, MR: Int, ALayout: TensorLayout, QLayout: TensorLayout, SLayout: TensorLayout, PLayout: TensorLayout` | gemm_q8 dispatch | serve/registry.mojo, bench/bench_coldcache_mrow.mojo, bench/bench_coldcache_q8row.mojo |
 | `amar_matmul_skinny_v2` | `matmul_skinny.mojo` | `in_dtype: DType, CPT: Int, ALayout: TensorLayout, BLayout: TensorLayout, PLayout: TensorLayout` |  | bench/bench_coldcache.mojo, bench/bench_coldcache_m1.mojo |
 | `amar_skinny_reduce` | `matmul_skinny.mojo` | `PLayout: TensorLayout, CLayout: TensorLayout, NSPLIT: Int = SPLITK` | r_qf, r_h, r_kv, r_head | serve/registry.mojo, bench/bench_decode.mojo, kernels/test_attn_block.mojo, kernels/test_gguf_gemm.mojo, kernels/test_q8_gemm.mojo, kernels/test_ssm_block.mojo |
 | `amar_skinny_reduce_add` | `matmul_skinny.mojo` | `PLayout: TensorLayout, YLayout: TensorLayout, NSPLIT: Int = SPLITK` | r_add | serve/registry.mojo |
@@ -44,7 +47,7 @@ must be reachable from `serve/registry.mojo`, a bench, or a test.
 | `amar_cast_bf16` | `ssm.mojo` | `XLayout: TensorLayout, OLayout: TensorLayout` | cast_m, cast_1 | serve/registry.mojo, kernels/test_attn_block.mojo, kernels/test_ssm_block.mojo |
 | `amar_residual_add` | `ssm.mojo` | `XLayout: TensorLayout, YLayout: TensorLayout` |  | kernels/test_attn_block.mojo, kernels/test_ssm_block.mojo |
 | `amar_ssm_conv` | `ssm.mojo` | `QLayout: TensorLayout, SLayout: TensorLayout, WLayout: TensorLayout, OLayout: TensorLayout` | conv_k | serve/registry.mojo, bench/bench_launch_floor.mojo, kernels/test_ssm_block.mojo |
-| `amar_ssm_delta_step` | `ssm.mojo` | `S0Layout: TensorLayout, CLayout: TensorLayout, GLayout: TensorLayout, OLayout: TensorLayout` | delta_k | serve/registry.mojo, bench/bench_launch_floor.mojo, kernels/test_ssm_block.mojo |
+| `amar_ssm_delta_step` | `ssm.mojo` | `MR: Int, S0Layout: TensorLayout, CLayout: TensorLayout, GLayout: TensorLayout, OLayout: TensorLayout` |  | serve/registry.mojo, bench/bench_launch_floor.mojo, kernels/test_ssm_block.mojo |
 | `amar_ssm_gated_out` | `ssm.mojo` | `OLayout: TensorLayout, ZLayout: TensorLayout, NLayout: TensorLayout, RLayout: TensorLayout` |  | kernels/test_ssm_block.mojo |
 | `amar_ssm_gated_out_bf16` | `ssm.mojo` | `OLayout: TensorLayout, ZLayout: TensorLayout, NLayout: TensorLayout, RLayout: TensorLayout` | gated_k | serve/registry.mojo, bench/bench_launch_floor.mojo |
 | `amar_ssm_gates` | `ssm.mojo` | `ALayout: TensorLayout, BLayout: TensorLayout, GLayout: TensorLayout, WLayout: TensorLayout, DLayout: TensorLayout` |  | kernels/test_ssm_block.mojo |
