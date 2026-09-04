@@ -96,3 +96,46 @@ sync per window), SSM per-row 1.06 (M2, lane C), ffn 0.93 (GEMM m=2 is
 unmeasured), attn 0.21. Draft-path split and the q4 draft head are the
 next preregistered items; draft quantization cannot change output tokens,
 only acceptance, so it is not gated by bit-exactness.
+
+### M1 ablation (2026-09-04, lane A stint 2, `.work/briefs/status-mrowA.md`)
+
+Original q8row, cold-cache ffn shape, ratio to FULL MR=1 (70.5 us):
+FULL m=4 1.46x, m=8 2.71x. NOTRAFFIC (all rows read A row 0): 1.38x /
+2.53x. NOFMA (all rows load A, only row 0 accumulates): **1.06x / 1.11x**.
+OCC (ROW_WAVES=4): 1.42x / 2.69x. VGPR 89-133 across variants, no spills.
+**The multi-row cost is FMA count, not traffic and not occupancy.** The
+kernel is compute-bound above m=2: per weight element it does one dequant
+and MR fp32 SIMD FMAs on the bf16 activations. LDS staging (stint 1) could
+not help and did not. Lever, preregistered as M1b below: packed int8 dot
+products (activations quantized to q8 per 32-block at window start, weights
+already q8, `v_dot4_i32_i8`-class math, 4 MACs/lane/op) for m >= 3 only;
+m <= 2 keeps the bf16 path and its bit-exactness.
+
+### M2 (2026-09-04, lane C `871faca`, merged `9808a9d`)
+
+Five SSM kernels take `m`, row loop inside; `amar_ssm_delta_step` is
+VGPR-spill-bound (192 VGPR, 122 spills at MR=1; a runtime row loop made it
+288) so it is instantiated per MR via `delta_dispatch`. `test_ssm_block`
+m=1/m=4 bit-exact PASS. p09 k=2: 77.6 -> 78.4 (+1%), `profile: ssm` 0.273
+-> 0.267 s. Small, as the split predicted (1.06 ms of which launches were a
+fraction). The 122-spill delta step at m=1 is a standing defect of the
+decode path itself: `bench/ssm-occupancy-protocol.md` was frozen for it
+and never run; lane C stint 2 runs it.
+
+### Draft-path split (2026-09-04, lane B stint 2, `BARO_PROFILE=3`, merged `03f6a13`)
+
+Per 2-row window, race prompt k=1: layer 0.61, **head 1.51**, argmax 0.21,
+accept (copies + sync + compare) 0.04, other 0.02 = 2.40 ms. p09 k=1 the
+same within 0.1. k=2 doubles everything except accept: draft steps are
+one row each, never batched. The host sync is 2% and not a lever. The
+draft LM head (1.06 GB q8 read per drafted token) is 63% of the draft path.
+
+## M1b, M4 frozen (2026-09-04, after the ablation, before any run)
+
+| stage | prediction | land rule |
+|---|---|---|
+| M1b q8 x q8 dot kernel, cold-cache ffn shape | m=4 <= 1.15x, m=8 <= 1.4x of bf16 m=1 | parity vs fp64 on dequantized q8 activations <= 2e-3 max_rel; engine 64/64 race AND >= 18/20 identity vs arm A on the prompt set with m>=3 windows only |
+| M1b engine effect | prefill 4-row 43 ms -> <= 25 ms; k=4 race 146 -> >= 160 | recorded |
+| M4 q4 draft head (`bench/draft-q4-protocol.md`) | draft path 2.4 -> <= 1.7 ms/window; real-prompt k=2 median 100.7 -> **108-115**; acceptance within 3 points of q8 draft | >= 106 AND acceptance >= 66% |
+| falsifier M1b | m=4 > 1.3x: int8 dot path does not beat fp32 FMA on this card; stop | |
+| falsifier M4 | acceptance drops > 5 points: q4 draft too lossy, try q6/q5 pack before giving up | |
