@@ -414,3 +414,24 @@ packing, 14 other.
 |---|---|---|---|---|
 | 1.5 address diet | `HOIST=1`: lane constants computed once above the K-loop | +1.5-4% (16 fewer ALU per 16 wmma; clock may rise) and ISA receipt shows class (a) = 0 | >= +1% disjoint AND receipt class (a) = 0 | receipt still shows the math in the loop -> compiler re-materialised, rejected |
 | 1.2 SGB | `SGB=1`: schedule_group_barrier sequence from DIET-SGB.md §2 | +0-3% (hint only; cannot reduce instruction count) | >= +1% disjoint | two builds < +1% -> rejected |
+
+**Round 7 result, lever 1.3b NT B operand** (2026-09-04, commits c72cc6c,
+6f786db, dbd8324; 5 probed rounds; `.work/r6/race-1.3b-{4096,2048}.log`;
+all arms `correct: true`; receipts: TB=1 189 VGPR / 0 spills, K-step
+ds_store_b16 count 0, TB=0 ISA-identical to champion):
+
+| size | abl0 | tb1 | vendor NN | vendor NT |
+|---|---|---|---|---|
+| 4096^3 | 90506 (88837-91700) @2.59 GHz, 357/clk | 83093 (81584-84904) @2.63 GHz, 325/clk | 81401 (75757-83478) | 78196 (76832-80790) |
+| 2048^3 | 91576 (91470-91702) @2.72 GHz, 350/clk | 65623 (64751-66344) @3.00 GHz, 227/clk | 78630 (72284-79802) | 70077 (65594-73003) |
+
+**Rejected on the first build**: -8% at 4096^3, -28% at 2048^3, both
+disjoint. The store side got cheaper as predicted, but the [n][k] LDS tile
+makes the B fragment reads the bottleneck: at 2048^3 the card idles up to
+3.0 GHz while FLOP/clk/CU falls to 227, the signature of waves stalled on
+LDS rather than of extra instructions. The vendor NT arm is also slower
+than its NN arm (-4% / -11%), so hipBLASLt has no NT trick here either.
+Prediction (+4-8%) was wrong because it counted stores and ignored the
+read-side bank pattern of the transposed tile. The knob stays (TB=0 is
+byte-identical); a second build would need a different LDS swizzle for
+the [n][k] tile, which is a new lever (preregister separately if pursued).
