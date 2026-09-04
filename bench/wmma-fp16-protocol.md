@@ -359,3 +359,31 @@ two builds per lever.
 |---|---|---|---|---|
 | 1.1 PRIO | `PRIO=1`: s_setprio 3 around the per-K-step mma block, 0 after | +0-3% | >= +1% disjoint | two builds < +1% -> rejected, knob stays only if zero-cost |
 | 1.3b NT B operand | `TB=1`: B given as [N][K], B loader becomes A's b128 path, vendor arm `amarbaro_gemm_f16_nt` (HIPBLAS_OP_T) | +4-8% vs abl0; >= +2% at every size >= 1536^3; NT vendor within 3% of NN vendor | >= +2% disjoint at 4096^3 and 2048^3 | ours NT < abl0 or vendor NT > +5% over vendor NN (then the vendor NT arm, not ours, is the story) |
+
+**Round 6 result, step 0.4** (2026-09-04, `.work/r6/ablation-0.4.log`, 3 probed
+samples each, 2*4096^3 = 137.4 GFLOP per launch):
+
+| arm | median GFLOP/s | ms | sclk_med | FLOP/clk/CU | power | receipt |
+|---|---|---|---|---|---|---|
+| abl0 full | 88923 | 1.545 | 2606-2630 | 354-357 | 279-325 W | 188 VGPR, 0 spills |
+| abl1 no mma | 205955 | 0.667 | 2672-2704 | (n/a) | 285-349 W | 112, 0 |
+| abl2 no post-prologue global loads | 102625 | 1.339 | 2860-2901 | 369-371 | 254-315 W | 192, 7 spills |
+| abl3 + no LDS fragment reads | 81819 | 1.679 | 2827-2869 | 297-303 | 278-323 W | 192, 69 spills: DISCARDED |
+
+Predictions: abl1 0.667 in range (0.7-0.9, just under); abl0 1.545 vs
+1.40-1.50 (resident-idle, matches step 0.2); abl2 1.339 in range; abl3
+unusable (spill-bound, slower than abl0). The stated fail rule fires on the
+ms reading (t0 - t2 = 0.206 ms > 0.15) but the per-clock column says why,
+and it is not latency: removing the global loads lifts abl0's 355 to only
+370 FLOP/clk/CU (+4%) while the clock rises 2.61 -> 2.88 GHz (+11%). The
+global-load traffic is not exposed, it is *paid in watts*. So Phase 3
+(prefetch restructure) does not move ahead; the ordering stands, with the
+target restated per column:
+
+- clock gap: 2.61 GHz vs the 3.0 GHz the WMMA-only kernel holds = 13%,
+  bought only by fewer joules per FLOP (fewer/wider LDS and VALU ops, fewer
+  bytes moved: levers 1.3b, 1.5, 1.4);
+- issue gap: 355 vs 436 FLOP/clk/CU = 19%, of which ~4% is global-load
+  issue and the rest LDS/VALU/barrier issue (levers 1.1, 1.2, 1.3b, 2.1);
+- memory skeleton 0.667 ms = 61% of full time, so overlap is far from the
+  point where the loads would be the floor.
