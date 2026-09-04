@@ -78,3 +78,11 @@ comments or docstrings by convention; rationale goes in commit messages and
 Correctness gates before anything else: `./run-tests.sh` builds the shim and
 runs the parity tests, and `tools/kernel-census.py` fails if a kernel is
 unreachable from the engine, a bench or a test.
+
+`tools/ci-checks.sh` runs every invariant that does not need a GPU or the Mojo
+toolchain -- the kernel census, whether `docs/KERNELS.md` is current, Python and
+shell syntax, the issue templates, that `PROTOCOL-RULES.md` still carries P1-P6,
+that every repo path the docs cite exists, and that the receipts in `results/`
+are internally consistent. GitHub Actions runs it on every push and pull
+request. It is not a substitute for `./run-tests.sh`: no hosted runner has an
+RDNA3 card, so the kernels themselves are only verified on hardware.

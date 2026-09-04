@@ -1,0 +1,20 @@
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  non-gpu:
+    # Everything here runs without a GPU or the Mojo toolchain. The kernels
+    # themselves are verified by ./run-tests.sh on an RDNA3 card, which no
+    # hosted runner has; see CONTRIBUTING.md.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml
+      - run: tools/ci-checks.sh

@@ -249,8 +249,8 @@ Split-K not needed; not built.
 
 ### Round 5 (2026-09-02): clock under load -- where the remaining headroom is
 
-Trigger: an external review of `kernels/matmul_wmma.mojo` (the retired direct
-kernel) read as if it were the shipped one, claiming large headroom from LDS
+Trigger: an external review of `amar_matmul_wmma` (the retired direct kernel,
+removed from the tree in `7805393`) read as if it were the shipped one, claiming large headroom from LDS
 staging, XOR swizzle, fp16 register packing and a vectorized epilogue. Against
 the pipe kernel: staging, swizzle and edge-branch removal are rounds 3-3b;
 packing is forced by the receipts above (252 VGPR / 0 spills for 4x4 is
