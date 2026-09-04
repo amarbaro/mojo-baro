@@ -252,6 +252,61 @@ def amar_matmul_skinny_m1_row[
         O[row] = rebind[O.ElementType](total)
 
 
+def amar_matmul_skinny_m1_q8row[
+    UNROLL: Int,
+    ALayout: TensorLayout, QLayout: TensorLayout, SLayout: TensorLayout,
+    OLayout: TensorLayout
+](
+    A: TileTensor[DType.bfloat16, ALayout, MutAnyOrigin],
+    Q: TileTensor[DType.int8, QLayout, MutAnyOrigin],
+    S: TileTensor[DType.float16, SLayout, MutAnyOrigin],
+    O: TileTensor[dtype, OLayout, MutAnyOrigin],
+    n: Int32,
+    k_dim: Int32,
+):
+    comptime assert A.flat_rank == 2 and Q.flat_rank == 2
+    comptime assert S.flat_rank == 2 and O.flat_rank == 1
+
+    var N = Int(n)
+    var K = Int(k_dim)
+    var lane = Int(lane_id())
+    var row = Int(block_idx.x) * ROW_WAVES + Int(thread_idx.x) // WARP_SIZE
+    if row >= N:
+        return
+
+    comptime QV = 16
+    comptime STEP = WARP_SIZE * QV
+    var Qv = Q.vectorize[1, QV]()
+    var Av = A.vectorize[1, QV]()
+    var acc = SIMD[dtype, QV](0)
+
+    var kk = 0
+    while kk + UNROLL * STEP <= K:
+        var qs = InlineArray[SIMD[DType.int8, QV], UNROLL](uninitialized=True)
+        var ds = InlineArray[Scalar[DType.float16], UNROLL](uninitialized=True)
+
+        comptime for u in range(UNROLL):
+            var kb = kk + u * STEP
+            qs[u] = rebind[SIMD[DType.int8, QV]](Qv[row, kb // QV + lane])
+            ds[u] = rebind[Scalar[DType.float16]](S[row, (kb + lane * QV) // 32])
+
+        comptime for u in range(UNROLL):
+            var kb = kk + u * STEP
+            var a = rebind[SIMD[DType.bfloat16, QV]](Av[0, kb // QV + lane]).cast[dtype]()
+            acc += (qs[u].cast[dtype]() * ds[u].cast[dtype]()) * a
+        kk += UNROLL * STEP
+    while kk < K:
+        var q = rebind[SIMD[DType.int8, QV]](Qv[row, kk // QV + lane]).cast[dtype]()
+        var d = rebind[Scalar[DType.float16]](S[row, (kk + lane * QV) // 32]).cast[dtype]()
+        var a = rebind[SIMD[DType.bfloat16, QV]](Av[0, kk // QV + lane]).cast[dtype]()
+        acc += (q * d) * a
+        kk += STEP
+
+    var total = warp.sum(acc.reduce_add())
+    if lane == 0:
+        O[row] = rebind[O.ElementType](total)
+
+
 def amar_matmul_skinny_m1_dual[
     in_dtype: DType, CPT: Int,
     ALayout: TensorLayout, BLayout: TensorLayout, PLayout: TensorLayout

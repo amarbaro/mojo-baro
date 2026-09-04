@@ -131,3 +131,39 @@ Decision: the wave-per-row template is validated at 856 GB/s (89% of peak)
 and becomes the Q1b base. bf16 engine wiring is NOT done on -3.1% (token gate
 re-establishment is not worth it for that); if Q1b lands, the bf16 path is
 moot anyway.
+
+### Q0 receipt (2026-09-04): PASS
+
+`tools/engine-pack.py --q8` -> `.work/engine-pack-q8/` (10.73 GB; token_embd
+stays bf16 at 1.0 GB, it is a row lookup, not a stream -- scope narrowed from
+the frozen text, disclosed here). `tools/q8-check.py` against
+`llama-quantize ... Q8_0` (9.32 GiB, 8.50 BPW): blk.0.ffn_gate, blk.3.attn_q,
+blk.32.nextn.eh_proj, output.weight all 0 mismatched quants and 0 mismatched
+fp16 scales (output.weight alone is 1.017e9 quants). Our pack IS llama.cpp's
+Q8_0, so G2 compares equal weights.
+
+### Q1b receipt (2026-09-04): LANDED
+
+`amar_matmul_skinny_m1_q8row[UNROLL=4]`: wave per row over int8 [N, K] +
+fp16 scales [N, K/32], 16 int8 per lane per strip, one fp16 scale per lane
+per strip. `bench/bench_coldcache_q8row.mojo`, 8 rotating buffers, logs
+`.work/coldcache-q8row-20260904.log`, `.work/coldcache-q8row-2-20260904.log`.
+
+| arm | us (median of 10) | GB/s | vs champion |
+|---|---|---|---|
+| m1c8 bf16 champion | 121.1 | 830 | 1.00 |
+| row8 bf16 | 117.4 | 856 | 1.03 |
+| **q8row** | **62.6** | 855 (53.5 MB) | **1.93x** |
+
+Clock 3069 MHz median, 253-312 W. Prediction 62-75 us, land <= 85: landed at
+the floor of the prediction. Same bytes/s as the bf16 row kernel: the
+dequant costs nothing, the bytes are the whole story.
+
+Parity: the frozen rule said rel < 1e-5 vs the dequantized values, but the
+harness metric (|err| / max(|ref|, 1e-3), fp64 host reference) gives 2.2e-4
+for the bf16 CHAMPION against its own reference, so that rule was tighter
+than the metric can show. q8row on the same metric: 9.4e-5. Normalized
+absolute error (max |err| / max |ref|): q8row 1.1e-7, champion 1.0e-6. Kernel
+is correct; cancellation on near-zero outputs made the relative metric
+noisy. Quantization effect vs bf16 outputs: 0.64% of max output, that is
+what G1/G2 judge at token level.

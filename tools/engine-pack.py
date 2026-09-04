@@ -7,7 +7,13 @@ GEMM; f32 tensors (norms, conv, ssm scalars) as-is. Emits, per line:
 in a fixed, engine-known order. The blk.32 NextN draft head is appended
 after output.weight, so every trunk offset is unchanged by its presence.
 
-Usage: tools/engine-pack.py MODEL.gguf OUTDIR
+Usage: tools/engine-pack.py MODEL.gguf OUTDIR [--q8]
+
+--q8: every 2D bf16 weight except token_embd is stored int8 in weight-native
+[out, in] layout followed by fp16 block scales [out, in/32], ggml q8_0
+rounding (d = amax/127 in fp32, q = roundf(x * (1/d)), d stored as fp16).
+Index dtype is "q8"; n_elem counts weights, the scales follow at
+offset + n_elem bytes.
 """
 import sys
 from pathlib import Path
@@ -53,7 +59,25 @@ def layer_names(i):
     return [base + n for n in core + ffn]
 
 
+def bf16_to_f32(u16):
+    return (u16.astype(np.uint32) << 16).view(np.float32)
+
+
+def quantize_q8_0(w16):
+    x = bf16_to_f32(w16).reshape(w16.shape[0], -1, 32)
+    amax = np.abs(x).max(axis=2)
+    d = (amax / 127.0).astype(np.float32)
+    idv = np.where(d != 0, np.float32(1.0) / d, np.float32(0)).astype(np.float32)
+    x0 = (x * idv[:, :, None]).astype(np.float32)
+    q = np.sign(x0) * np.floor(np.abs(x0) + np.float32(0.5))
+    q = np.clip(q, -128, 127).astype(np.int8)
+    return q.reshape(w16.shape[0], -1), d.astype(np.float16)
+
+
 def main():
+    q8 = "--q8" in sys.argv
+    if q8:
+        sys.argv.remove("--q8")
     model, outdir = Path(sys.argv[1]), Path(sys.argv[2])
     outdir.mkdir(parents=True, exist_ok=True)
     f, infos, data_start, kv = ge.parse(model)
@@ -76,7 +100,12 @@ def main():
             shape = list(reversed(dims))
             if tname == "bf16" and len(shape) == 2 and name != "token_embd.weight":
                 w = np.frombuffer(raw, dtype=np.uint16).reshape(shape)
-                raw = np.ascontiguousarray(w.T).tobytes()
+                if q8:
+                    q, d = quantize_q8_0(w)
+                    raw = q.tobytes() + d.tobytes()
+                    tname = "q8"
+                else:
+                    raw = np.ascontiguousarray(w.T).tobytes()
             out.write(raw)
             idx_lines.append(f"{name} {tname} {off} {n_elem}")
             off += len(raw)
