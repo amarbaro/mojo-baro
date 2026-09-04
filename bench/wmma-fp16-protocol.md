@@ -435,3 +435,15 @@ Prediction (+4-8%) was wrong because it counted stores and ignored the
 read-side bank pattern of the transposed tile. The knob stays (TB=0 is
 byte-identical); a second build would need a different LDS swizzle for
 the [n][k] tile, which is a new lever (preregister separately if pursued).
+
+**Round 7, lever 2.1 -- frozen BEFORE building** (2026-09-04). Champion
+2x4 wave tile issues 24 ds_load_b128 per 16 wmma per wave per K-step; a
+4x4 wave tile (WARPS 2x2, 4 waves on 128x128) needs 16 ds_load_b128 per
+32 wmma, halving LDS reads per FLOP, which is both the issue gap and the
+joule gap of step 0.4. The 2026-09-02 4x4 attempt was PGR1 and hit 91.3k;
+this build is PGR2 with the B fragments streamed per tn (8 VGPR live
+instead of 32) and launch bounds on.
+
+| lever | knob | prediction @4096^3 | keep floor | fail rule |
+|---|---|---|---|---|
+| 2.1 4x4 PGR2 streamed-B | `WARPS_M=2 WARPS_N=2 WTILE_M=4 WTILE_N=4 PGR=2 LB=1 BSTREAM=1` | +5-10% vs abl0 if issue-bound; sclk may rise | >= +3% disjoint at 4096^3, >= 0 at 2048^3 | ISA receipt with any spill -> do not time, stop the lever; two builds < +3% -> rejected |
