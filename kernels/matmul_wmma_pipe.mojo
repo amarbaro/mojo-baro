@@ -26,6 +26,7 @@ comptime LB = 0
 comptime ABL = 0
 comptime PRIO = 0
 comptime TB = 0
+comptime HOIST = 0
 comptime LB_MAX = NTHREADS if LB == 1 else 1024
 comptime C_DTYPE = DType.float16 if C_F16 == 1 else DType.float32
 
@@ -202,6 +203,31 @@ def amar_matmul_wmma_pipe[
 
     var cur = 0
     var kt = 0
+    var a_gr = SIMD[DType.int32, A_PER](0)
+    var a_c = SIMD[DType.int32, A_PER](0)
+    var b_gc = SIMD[DType.int32, B_PER](0)
+    var b_r = SIMD[DType.int32, B_PER](0)
+    var b_grn = SIMD[DType.int32, B_PER](0)
+    var b_kc = SIMD[DType.int32, B_PER](0)
+    comptime if HOIST == 1:
+        comptime for s in range(A_PER):
+            var v = tid + s * NTHREADS
+            var r = v // KCH
+            a_gr[s] = Int32(block_row + r)
+            a_c[s] = Int32((v % KCH) * VEC)
+        comptime if TB == 1:
+            comptime for s in range(B_PER):
+                var v = tid + s * NTHREADS
+                var rn = v // KCH
+                b_grn[s] = Int32(block_col + rn)
+                b_kc[s] = Int32((v % KCH) * VEC)
+        else:
+            comptime for s in range(B_PER):
+                var v = tid + s * NTHREADS
+                var r = (v % BLK_K) if TRANS_B == 2 else (v // (BLK_N // VEC))
+                var c = ((v // BLK_K) * VEC) if TRANS_B == 2 else ((v % (BLK_N // VEC)) * VEC)
+                b_gc[s] = Int32(block_col + c)
+                b_r[s] = Int32(r)
     comptime if PGR == 1:
         var cur = 0
         var kt = 0
@@ -215,26 +241,41 @@ def amar_matmul_wmma_pipe[
             if have_next:
                 comptime if ABL < 2:
                     comptime for s in range(A_PER):
-                        var v = tid + s * NTHREADS
-                        var r = v // KCH
-                        var c = (v % KCH) * VEC
-                        var gr = block_row + r
+                        var gr: Int
+                        var c: Int
+                        comptime if HOIST == 1:
+                            gr = Int(a_gr[s])
+                            c = Int(a_c[s])
+                        else:
+                            var v = tid + s * NTHREADS
+                            var r = v // KCH
+                            c = (v % KCH) * VEC
+                            gr = block_row + r
                         var gc = next_k + c
                         var x = SIMD[DType.float16, VEC](0)
-                        if ALIGNED == 1 or (gr < M and gc + VEC <= K):
+                        comptime if HOIST == 1 and ALIGNED == 1:
                             x = rebind[SIMD[DType.float16, VEC]](Av[gr, gc // VEC])
-                        elif gr < M:
-                            comptime for i in range(VEC):
-                                if gc + i < K:
-                                    x[i] = rebind[Scalar[DType.float16]](A[gr, gc + i])
+                        else:
+                            if ALIGNED == 1 or (gr < M and gc + VEC <= K):
+                                x = rebind[SIMD[DType.float16, VEC]](Av[gr, gc // VEC])
+                            elif gr < M:
+                                comptime for i in range(VEC):
+                                    if gc + i < K:
+                                        x[i] = rebind[Scalar[DType.float16]](A[gr, gc + i])
                         comptime for i in range(VEC):
                             sta[s * VEC + i] = x[i]
                     comptime for s in range(B_PER):
                         var v = tid + s * NTHREADS
                         comptime if TB == 1:
-                            var rn = v // KCH
-                            var kc = (v % KCH) * VEC
-                            var grn = block_col + rn
+                            var grn: Int
+                            var kc: Int
+                            comptime if HOIST == 1:
+                                grn = Int(b_grn[s])
+                                kc = Int(b_kc[s])
+                            else:
+                                var rn = v // KCH
+                                kc = (v % KCH) * VEC
+                                grn = block_col + rn
                             var gkc = next_k + kc
                             var x = SIMD[DType.float16, VEC](0)
                             if ALIGNED == 1 or (grn < N and gkc + VEC <= K):
@@ -246,17 +287,26 @@ def amar_matmul_wmma_pipe[
                             comptime for i in range(VEC):
                                 stb[s * VEC + i] = x[i]
                         else:
-                            var r = (v % BLK_K) if TRANS_B == 2 else (v // (BLK_N // VEC))
-                            var c = ((v // BLK_K) * VEC) if TRANS_B == 2 else ((v % (BLK_N // VEC)) * VEC)
+                            var gc: Int
+                            var r: Int
+                            comptime if HOIST == 1:
+                                gc = Int(b_gc[s])
+                                r = Int(b_r[s])
+                            else:
+                                r = (v % BLK_K) if TRANS_B == 2 else (v // (BLK_N // VEC))
+                                var c = ((v // BLK_K) * VEC) if TRANS_B == 2 else ((v % (BLK_N // VEC)) * VEC)
+                                gc = block_col + c
                             var gr = next_k + r
-                            var gc = block_col + c
                             var x = SIMD[DType.float16, VEC](0)
-                            if ALIGNED == 1 or (gr < K and gc + VEC <= N):
+                            comptime if HOIST == 1 and ALIGNED == 1:
                                 x = rebind[SIMD[DType.float16, VEC]](Bv[gr, gc // VEC])
-                            elif gr < K:
-                                comptime for i in range(VEC):
-                                    if gc + i < N:
-                                        x[i] = rebind[Scalar[DType.float16]](B[gr, gc + i])
+                            else:
+                                if ALIGNED == 1 or (gr < K and gc + VEC <= N):
+                                    x = rebind[SIMD[DType.float16, VEC]](Bv[gr, gc // VEC])
+                                elif gr < K:
+                                    comptime for i in range(VEC):
+                                        if gc + i < N:
+                                            x[i] = rebind[Scalar[DType.float16]](B[gr, gc + i])
                             comptime for i in range(VEC):
                                 stb[s * VEC + i] = x[i]
 
@@ -473,26 +523,41 @@ def amar_matmul_wmma_pipe[
                         comptime if ABL < 2:
                             comptime if ph == 0:
                                 comptime for s in range(A_PER):
-                                    var v = tid + s * NTHREADS
-                                    var r = v // KCH
-                                    var c = (v % KCH) * VEC
-                                    var gr = block_row + r
+                                    var gr: Int
+                                    var c: Int
+                                    comptime if HOIST == 1:
+                                        gr = Int(a_gr[s])
+                                        c = Int(a_c[s])
+                                    else:
+                                        var v = tid + s * NTHREADS
+                                        var r = v // KCH
+                                        c = (v % KCH) * VEC
+                                        gr = block_row + r
                                     var gc = next_k + c
                                     var x = SIMD[DType.float16, VEC](0)
-                                    if ALIGNED == 1 or (gr < M and gc + VEC <= K):
+                                    comptime if HOIST == 1 and ALIGNED == 1:
                                         x = rebind[SIMD[DType.float16, VEC]](Av[gr, gc // VEC])
-                                    elif gr < M:
-                                        comptime for i in range(VEC):
-                                            if gc + i < K:
-                                                x[i] = rebind[Scalar[DType.float16]](A[gr, gc + i])
+                                    else:
+                                        if ALIGNED == 1 or (gr < M and gc + VEC <= K):
+                                            x = rebind[SIMD[DType.float16, VEC]](Av[gr, gc // VEC])
+                                        elif gr < M:
+                                            comptime for i in range(VEC):
+                                                if gc + i < K:
+                                                    x[i] = rebind[Scalar[DType.float16]](A[gr, gc + i])
                                     comptime for i in range(VEC):
                                         sta[s * VEC + i] = x[i]
                                 comptime for s in range(B_PER):
                                     var v = tid + s * NTHREADS
                                     comptime if TB == 1:
-                                        var rn = v // KCH
-                                        var kc = (v % KCH) * VEC
-                                        var grn = block_col + rn
+                                        var grn: Int
+                                        var kc: Int
+                                        comptime if HOIST == 1:
+                                            grn = Int(b_grn[s])
+                                            kc = Int(b_kc[s])
+                                        else:
+                                            var rn = v // KCH
+                                            kc = (v % KCH) * VEC
+                                            grn = block_col + rn
                                         var gkc = next_k + kc
                                         var x = SIMD[DType.float16, VEC](0)
                                         if ALIGNED == 1 or (grn < N and gkc + VEC <= K):
@@ -504,42 +569,66 @@ def amar_matmul_wmma_pipe[
                                         comptime for i in range(VEC):
                                             stb[s * VEC + i] = x[i]
                                     else:
-                                        var r = (v % BLK_K) if TRANS_B == 2 else (v // (BLK_N // VEC))
-                                        var c = ((v // BLK_K) * VEC) if TRANS_B == 2 else ((v % (BLK_N // VEC)) * VEC)
+                                        var gc: Int
+                                        var r: Int
+                                        comptime if HOIST == 1:
+                                            gc = Int(b_gc[s])
+                                            r = Int(b_r[s])
+                                        else:
+                                            r = (v % BLK_K) if TRANS_B == 2 else (v // (BLK_N // VEC))
+                                            var c = ((v // BLK_K) * VEC) if TRANS_B == 2 else ((v % (BLK_N // VEC)) * VEC)
+                                            gc = block_col + c
                                         var gr = next_k + r
-                                        var gc = block_col + c
                                         var x = SIMD[DType.float16, VEC](0)
-                                        if ALIGNED == 1 or (gr < K and gc + VEC <= N):
+                                        comptime if HOIST == 1 and ALIGNED == 1:
                                             x = rebind[SIMD[DType.float16, VEC]](Bv[gr, gc // VEC])
-                                        elif gr < K:
-                                            comptime for i in range(VEC):
-                                                if gc + i < N:
-                                                    x[i] = rebind[Scalar[DType.float16]](B[gr, gc + i])
+                                        else:
+                                            if ALIGNED == 1 or (gr < K and gc + VEC <= N):
+                                                x = rebind[SIMD[DType.float16, VEC]](Bv[gr, gc // VEC])
+                                            elif gr < K:
+                                                comptime for i in range(VEC):
+                                                    if gc + i < N:
+                                                        x[i] = rebind[Scalar[DType.float16]](B[gr, gc + i])
                                         comptime for i in range(VEC):
                                             stb[s * VEC + i] = x[i]
 
                             else:
                                 comptime for s in range(A_PER):
-                                    var v = tid + s * NTHREADS
-                                    var r = v // KCH
-                                    var c = (v % KCH) * VEC
-                                    var gr = block_row + r
+                                    var gr: Int
+                                    var c: Int
+                                    comptime if HOIST == 1:
+                                        gr = Int(a_gr[s])
+                                        c = Int(a_c[s])
+                                    else:
+                                        var v = tid + s * NTHREADS
+                                        var r = v // KCH
+                                        c = (v % KCH) * VEC
+                                        gr = block_row + r
                                     var gc = next_k + c
                                     var x = SIMD[DType.float16, VEC](0)
-                                    if ALIGNED == 1 or (gr < M and gc + VEC <= K):
+                                    comptime if HOIST == 1 and ALIGNED == 1:
                                         x = rebind[SIMD[DType.float16, VEC]](Av[gr, gc // VEC])
-                                    elif gr < M:
-                                        comptime for i in range(VEC):
-                                            if gc + i < K:
-                                                x[i] = rebind[Scalar[DType.float16]](A[gr, gc + i])
+                                    else:
+                                        if ALIGNED == 1 or (gr < M and gc + VEC <= K):
+                                            x = rebind[SIMD[DType.float16, VEC]](Av[gr, gc // VEC])
+                                        elif gr < M:
+                                            comptime for i in range(VEC):
+                                                if gc + i < K:
+                                                    x[i] = rebind[Scalar[DType.float16]](A[gr, gc + i])
                                     comptime for i in range(VEC):
                                         sta1[s * VEC + i] = x[i]
                                 comptime for s in range(B_PER):
                                     var v = tid + s * NTHREADS
                                     comptime if TB == 1:
-                                        var rn = v // KCH
-                                        var kc = (v % KCH) * VEC
-                                        var grn = block_col + rn
+                                        var grn: Int
+                                        var kc: Int
+                                        comptime if HOIST == 1:
+                                            grn = Int(b_grn[s])
+                                            kc = Int(b_kc[s])
+                                        else:
+                                            var rn = v // KCH
+                                            kc = (v % KCH) * VEC
+                                            grn = block_col + rn
                                         var gkc = next_k + kc
                                         var x = SIMD[DType.float16, VEC](0)
                                         if ALIGNED == 1 or (grn < N and gkc + VEC <= K):
@@ -551,17 +640,26 @@ def amar_matmul_wmma_pipe[
                                         comptime for i in range(VEC):
                                             stb1[s * VEC + i] = x[i]
                                     else:
-                                        var r = (v % BLK_K) if TRANS_B == 2 else (v // (BLK_N // VEC))
-                                        var c = ((v // BLK_K) * VEC) if TRANS_B == 2 else ((v % (BLK_N // VEC)) * VEC)
+                                        var gc: Int
+                                        var r: Int
+                                        comptime if HOIST == 1:
+                                            gc = Int(b_gc[s])
+                                            r = Int(b_r[s])
+                                        else:
+                                            r = (v % BLK_K) if TRANS_B == 2 else (v // (BLK_N // VEC))
+                                            var c = ((v // BLK_K) * VEC) if TRANS_B == 2 else ((v % (BLK_N // VEC)) * VEC)
+                                            gc = block_col + c
                                         var gr = next_k + r
-                                        var gc = block_col + c
                                         var x = SIMD[DType.float16, VEC](0)
-                                        if ALIGNED == 1 or (gr < K and gc + VEC <= N):
+                                        comptime if HOIST == 1 and ALIGNED == 1:
                                             x = rebind[SIMD[DType.float16, VEC]](Bv[gr, gc // VEC])
-                                        elif gr < K:
-                                            comptime for i in range(VEC):
-                                                if gc + i < N:
-                                                    x[i] = rebind[Scalar[DType.float16]](B[gr, gc + i])
+                                        else:
+                                            if ALIGNED == 1 or (gr < K and gc + VEC <= N):
+                                                x = rebind[SIMD[DType.float16, VEC]](Bv[gr, gc // VEC])
+                                            elif gr < K:
+                                                comptime for i in range(VEC):
+                                                    if gc + i < N:
+                                                        x[i] = rebind[Scalar[DType.float16]](B[gr, gc + i])
                                         comptime for i in range(VEC):
                                             stb1[s * VEC + i] = x[i]
 
