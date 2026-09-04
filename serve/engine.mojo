@@ -15,113 +15,8 @@ from std.time import perf_counter_ns
 
 from max.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, TensorLayout, row_major
+from registry import *
 
-from elementwise import (
-    amar_rmsnorm, amar_rmsnorm_cast, amar_embed_lookup_pos, amar_argmax_pos, amar_tok_copy,
-)
-from matmul_skinny import (
-    amar_matmul_skinny_q8row, amar_skinny_reduce, amar_skinny_reduce_add,
-    amar_skinny_reduce_swiglu_bf16, SM, SPLITK, ROW_WAVES, ROW_THREADS,
-)
-from ssm import (
-    amar_ssm_reduce_gates, amar_ssm_conv, amar_ssm_qk_l2norm,
-    amar_ssm_delta_step, amar_ssm_gated_out_bf16, amar_cast_bf16, CONV, NH_V, SSTATE,
-)
-from attn import (
-    amar_head_rmsnorm, amar_attn_decode, amar_gate_mul_cast, amar_qgate_split, amar_rope_yarn, amar_kv_append,
-    HD, NQH, NKVH,
-)
-
-comptime H = 4096
-comptime FFN = 12288
-comptime VOCAB = 248320
-comptime QF = 2 * H
-comptime KV = NKVH * HD
-comptime N_LAYERS = 32
-comptime N_SSM = 24
-comptime N_ATT = 8
-comptime TMAX = 128
-comptime GEN_N = 64
-
-comptime bf16 = DType.bfloat16
-comptime f32 = DType.float32
-
-comptime MROWS = SM
-comptime KMAX = SM
-comptime SLOTS = KMAX + 1
-comptime CONV_SLOT = N_SSM * 3 * CONV
-comptime SSM_SLOT = N_SSM * NH_V * SSTATE * SSTATE
-comptime ATT32 = NKVH * TMAX * HD
-
-comptime h_layout = row_major[H]()
-comptime h2_layout = row_major[1, H]()
-comptime xm_layout = row_major[MROWS, H]()
-comptime xflat_layout = row_major[MROWS * H]()
-comptime qfm_layout = row_major[MROWS, QF]()
-comptime convm_layout = row_major[MROWS, CONV]()
-comptime qm_layout = row_major[MROWS * NQH, HD]()
-comptime kvm_layout = row_major[MROWS * NKVH, HD]()
-comptime kvm_flat = row_major[MROWS, KV]()
-comptime ffnm_layout = row_major[MROWS, FFN]()
-comptime vm_layout = row_major[MROWS, VOCAB]()
-comptime ffn_layout = row_major[FFN]()
-comptime qf_layout = row_major[QF]()
-comptime q_layout = row_major[NQH, HD]()
-comptime kvh_layout = row_major[NKVH, HD]()
-comptime kvflat_layout = row_major[KV]()
-comptime cache_layout = row_major[NKVH, TMAX, HD]()
-comptime hd_layout = row_major[HD]()
-comptime conv_layout = row_major[CONV]()
-comptime cs_layout = row_major[3, CONV]()
-comptime cw_layout = row_major[CONV, 4]()
-comptime s_layout = row_major[NH_V, SSTATE, SSTATE]()
-comptime o_layout = row_major[NH_V, SSTATE]()
-comptime g32_layout = row_major[NH_V]()
-comptime n128_layout = row_major[SSTATE]()
-comptime emb_layout = row_major[VOCAB, H]()
-comptime vrow_layout = row_major[1, VOCAB]()
-comptime toks_layout = row_major[TMAX]()
-comptime dtok_layout = row_major[KMAX + 1]()
-
-comptime w_h_qf = row_major[H, QF]()
-comptime w_h_h = row_major[H, H]()
-comptime w_h_kv = row_major[H, KV]()
-comptime w_h_32 = row_major[H, NH_V]()
-comptime w_h_ffn = row_major[H, FFN]()
-comptime w_ffn_h = row_major[FFN, H]()
-comptime w_h_v = row_major[H, VOCAB]()
-comptime w_qf_h = row_major[QF, H]()
-comptime q_h_qf = row_major[QF, H]()
-comptime s_h_qf = row_major[QF, H // 32]()
-comptime q_h_h = row_major[H, H]()
-comptime s_h_h = row_major[H, H // 32]()
-comptime q_h_kv = row_major[KV, H]()
-comptime s_h_kv = row_major[KV, H // 32]()
-comptime q_h_32 = row_major[NH_V, H]()
-comptime s_h_32 = row_major[NH_V, H // 32]()
-comptime q_h_ffn = row_major[FFN, H]()
-comptime s_h_ffn = row_major[FFN, H // 32]()
-comptime q_ffn_h = row_major[H, FFN]()
-comptime s_ffn_h = row_major[H, FFN // 32]()
-comptime q_h_v = row_major[VOCAB, H]()
-comptime s_h_v = row_major[VOCAB, H // 32]()
-comptime q_qf_h = row_major[H, QF]()
-comptime s_qf_h = row_major[H, QF // 32]()
-
-comptime p_qf = row_major[SPLITK, SM, QF]()
-comptime p_h = row_major[SPLITK, SM, H]()
-comptime p_kv = row_major[SPLITK, SM, KV]()
-comptime p_32 = row_major[SPLITK, SM, NH_V]()
-comptime p_ffn = row_major[SPLITK, SM, FFN]()
-comptime p_v = row_major[SPLITK, SM, VOCAB]()
-comptime c_qf = row_major[1, QF]()
-comptime c_h = row_major[1, H]()
-comptime c_kv = row_major[1, KV]()
-comptime c_32 = row_major[1, NH_V]()
-comptime c_ffn = row_major[1, FFN]()
-
-comptime B2 = 2
-comptime B4 = 4
 
 
 def is_attn(i: Int) -> Bool:
@@ -217,62 +112,6 @@ def row_bf16[
     return rebind[TileTensor[bf16, LT, MutAnyOrigin]](t)
 
 
-comptime rmsc_k = amar_rmsnorm_cast[type_of(xm_layout), type_of(h_layout), type_of(xm_layout)]
-comptime embed_k = amar_embed_lookup_pos[type_of(emb_layout), type_of(xm_layout), type_of(toks_layout)]
-comptime argmax_k = amar_argmax_pos[type_of(vm_layout), type_of(toks_layout)]
-comptime argmax_d = amar_argmax_pos[type_of(vm_layout), type_of(dtok_layout)]
-comptime embed1_k = amar_embed_lookup_pos[type_of(emb_layout), type_of(h2_layout), type_of(dtok_layout)]
-comptime rms_m = amar_rmsnorm[type_of(xm_layout), type_of(h_layout), type_of(xm_layout)]
-comptime rms_h2 = amar_rmsnorm[type_of(h2_layout), type_of(h_layout), type_of(h2_layout)]
-comptime rmsc_h2 = amar_rmsnorm_cast[type_of(h2_layout), type_of(h_layout), type_of(h2_layout)]
-comptime cast_m = amar_cast_bf16[type_of(xflat_layout), type_of(xflat_layout)]
-comptime cast_1 = amar_cast_bf16[type_of(h_layout), type_of(h_layout)]
-comptime tokcp_k = amar_tok_copy[type_of(dtok_layout), type_of(toks_layout)]
-comptime tokcp_b = amar_tok_copy[type_of(toks_layout), type_of(dtok_layout)]
-comptime g_eh_1 = amar_matmul_skinny_q8row[4, 1, type_of(qfm_layout), type_of(q_qf_h), type_of(s_qf_h), type_of(p_h)]
-comptime g_eh_v = amar_matmul_skinny_q8row[4, SM, type_of(qfm_layout), type_of(q_qf_h), type_of(s_qf_h), type_of(p_h)]
-comptime g_qf_1 = amar_matmul_skinny_q8row[4, 1, type_of(xm_layout), type_of(q_h_qf), type_of(s_h_qf), type_of(p_qf)]
-comptime g_h_1 = amar_matmul_skinny_q8row[4, 1, type_of(xm_layout), type_of(q_h_h), type_of(s_h_h), type_of(p_h)]
-comptime g_kv_1 = amar_matmul_skinny_q8row[4, 1, type_of(xm_layout), type_of(q_h_kv), type_of(s_h_kv), type_of(p_kv)]
-comptime g_32_1 = amar_matmul_skinny_q8row[4, 1, type_of(xm_layout), type_of(q_h_32), type_of(s_h_32), type_of(p_32)]
-comptime g_ffn_1 = amar_matmul_skinny_q8row[4, 1, type_of(xm_layout), type_of(q_h_ffn), type_of(s_h_ffn), type_of(p_ffn)]
-comptime g_down_1 = amar_matmul_skinny_q8row[4, 1, type_of(ffnm_layout), type_of(q_ffn_h), type_of(s_ffn_h), type_of(p_h)]
-comptime g_head_1 = amar_matmul_skinny_q8row[4, 1, type_of(xm_layout), type_of(q_h_v), type_of(s_h_v), type_of(p_v)]
-comptime g_qf_v = amar_matmul_skinny_q8row[4, SM, type_of(xm_layout), type_of(q_h_qf), type_of(s_h_qf), type_of(p_qf)]
-comptime g_h_v = amar_matmul_skinny_q8row[4, SM, type_of(xm_layout), type_of(q_h_h), type_of(s_h_h), type_of(p_h)]
-comptime g_kv_v = amar_matmul_skinny_q8row[4, SM, type_of(xm_layout), type_of(q_h_kv), type_of(s_h_kv), type_of(p_kv)]
-comptime g_32_v = amar_matmul_skinny_q8row[4, SM, type_of(xm_layout), type_of(q_h_32), type_of(s_h_32), type_of(p_32)]
-comptime g_ffn_v = amar_matmul_skinny_q8row[4, SM, type_of(xm_layout), type_of(q_h_ffn), type_of(s_h_ffn), type_of(p_ffn)]
-comptime g_down_v = amar_matmul_skinny_q8row[4, SM, type_of(ffnm_layout), type_of(q_ffn_h), type_of(s_ffn_h), type_of(p_h)]
-comptime g_head_v = amar_matmul_skinny_q8row[4, SM, type_of(xm_layout), type_of(q_h_v), type_of(s_h_v), type_of(p_v)]
-comptime r_qf = amar_skinny_reduce[type_of(p_qf), type_of(qfm_layout), 1]
-comptime r_h = amar_skinny_reduce[type_of(p_h), type_of(xm_layout), 1]
-comptime r_kv = amar_skinny_reduce[type_of(p_kv), type_of(kvm_flat), 1]
-comptime r_add = amar_skinny_reduce_add[type_of(p_h), type_of(xm_layout), 1]
-comptime r_swiglu = amar_skinny_reduce_swiglu_bf16[type_of(p_ffn), type_of(ffnm_layout), 1]
-comptime r_head = amar_skinny_reduce[type_of(p_v), type_of(vm_layout), 1]
-comptime rgates_k = amar_ssm_reduce_gates[
-    type_of(p_32), type_of(g32_layout), type_of(g32_layout)
-]
-comptime conv_k = amar_ssm_conv[
-    type_of(conv_layout), type_of(cs_layout), type_of(cw_layout), type_of(conv_layout)
-]
-comptime l2_k = amar_ssm_qk_l2norm[type_of(conv_layout)]
-comptime delta_k = amar_ssm_delta_step[
-    type_of(s_layout), type_of(conv_layout), type_of(g32_layout), type_of(o_layout)
-]
-comptime gated_k = amar_ssm_gated_out_bf16[
-    type_of(o_layout), type_of(h_layout), type_of(n128_layout), type_of(h_layout)
-]
-comptime split_k = amar_qgate_split[type_of(qfm_layout), type_of(qm_layout), type_of(xflat_layout)]
-comptime hrms_q = amar_head_rmsnorm[type_of(qm_layout), type_of(hd_layout)]
-comptime hrms_kv = amar_head_rmsnorm[type_of(kvm_layout), type_of(hd_layout)]
-comptime rope_q = amar_rope_yarn[type_of(qm_layout)]
-comptime rope_k = amar_rope_yarn[type_of(kvm_layout)]
-comptime append_k = amar_kv_append[type_of(cache_layout), type_of(kvm_layout)]
-comptime att_k = amar_attn_decode[type_of(qm_layout), type_of(cache_layout), type_of(qm_layout)]
-comptime gmul_k = amar_gate_mul_cast[type_of(xflat_layout), type_of(xflat_layout), type_of(xflat_layout)]
-
 def blk32_forward(
     ctx: DeviceContext, wbuf: DeviceBuffer[DType.uint8], off: List[Int], e: Int,
     m: Int, pos: Int, tok_pos: Int, do_head: Bool,
@@ -315,10 +154,7 @@ def blk32_forward(
     var Wehq = tens_q8q(ctx, wbuf, off[e + 11], QF * H, q_qf_h)
     var Wehs = tens_q8s(ctx, wbuf, off[e + 11], QF * H, s_qf_h)
     var PhEh = TileTensor(p_h_d, p_h)
-    if m == 1:
-        ctx.enqueue_function[g_eh_1](CcM, Wehq, Wehs, PhEh, Int32(m), Int32(H), Int32(QF), grid_dim=ceildiv(H, ROW_WAVES), block_dim=ROW_THREADS)
-    else:
-        ctx.enqueue_function[g_eh_v](CcM, Wehq, Wehs, PhEh, Int32(m), Int32(H), Int32(QF), grid_dim=ceildiv(H, ROW_WAVES), block_dim=ROW_THREADS)
+    gemm_q8(ctx, CcM, Wehq, Wehs, PhEh, m, H, QF)
     ctx.enqueue_function[r_h](PhEh, Xm, Int32(m), Int32(H), grid_dim=ceildiv(m * H, 256), block_dim=256)
 
     var AttNorm32 = tens_f32(ctx, wbuf, off[e + 0], H, h_layout)
@@ -349,20 +185,11 @@ def blk32_forward(
     var Aoflat = TileTensor(ao_d, xflat_layout)
     var AoB = TileTensor(resb_d, xflat_layout)
     var AoBm = TileTensor(resb_d, xm_layout)
-    if m == 1:
-        ctx.enqueue_function[g_qf_1](CurBm, Wqq, Wqs, Pqf, Int32(m), Int32(QF), Int32(H), grid_dim=ceildiv(QF, ROW_WAVES), block_dim=ROW_THREADS)
-    else:
-        ctx.enqueue_function[g_qf_v](CurBm, Wqq, Wqs, Pqf, Int32(m), Int32(QF), Int32(H), grid_dim=ceildiv(QF, ROW_WAVES), block_dim=ROW_THREADS)
+    gemm_q8(ctx, CurBm, Wqq, Wqs, Pqf, m, QF, H)
     ctx.enqueue_function[r_qf](Pqf, Qfm, Int32(m), Int32(QF), grid_dim=ceildiv(m * QF, 256), block_dim=256)
-    if m == 1:
-        ctx.enqueue_function[g_kv_1](CurBm, Wkq, Wks, Pkv, Int32(m), Int32(KV), Int32(H), grid_dim=ceildiv(KV, ROW_WAVES), block_dim=ROW_THREADS)
-    else:
-        ctx.enqueue_function[g_kv_v](CurBm, Wkq, Wks, Pkv, Int32(m), Int32(KV), Int32(H), grid_dim=ceildiv(KV, ROW_WAVES), block_dim=ROW_THREADS)
+    gemm_q8(ctx, CurBm, Wkq, Wks, Pkv, m, KV, H)
     ctx.enqueue_function[r_kv](Pkv, Kflat, Int32(m), Int32(KV), grid_dim=ceildiv(m * KV, 256), block_dim=256)
-    if m == 1:
-        ctx.enqueue_function[g_kv_1](CurBm, Wvq, Wvs, Pkv, Int32(m), Int32(KV), Int32(H), grid_dim=ceildiv(KV, ROW_WAVES), block_dim=ROW_THREADS)
-    else:
-        ctx.enqueue_function[g_kv_v](CurBm, Wvq, Wvs, Pkv, Int32(m), Int32(KV), Int32(H), grid_dim=ceildiv(KV, ROW_WAVES), block_dim=ROW_THREADS)
+    gemm_q8(ctx, CurBm, Wvq, Wvs, Pkv, m, KV, H)
     ctx.enqueue_function[r_kv](Pkv, Vflat, Int32(m), Int32(KV), grid_dim=ceildiv(m * KV, 256), block_dim=256)
     ctx.enqueue_function[split_k](Qfm, Q, Gate, grid_dim=(NQH, m), block_dim=HD)
     ctx.enqueue_function[hrms_q](Q, Qn, Float32(1e-6), grid_dim=m * NQH, block_dim=HD)
@@ -373,10 +200,7 @@ def blk32_forward(
     ctx.enqueue_function[append_k](Vc, Vhd, Int32(pos), grid_dim=(NKVH, m), block_dim=HD)
     ctx.enqueue_function[att_k](Q, Kc, Vc, Ao, Int32(pos + 1), Float32(0.0625), grid_dim=(NQH, m), block_dim=HD)
     ctx.enqueue_function[gmul_k](Aoflat, Gate, AoB, Int32(m * H), grid_dim=ceildiv(m * H, 256), block_dim=256)
-    if m == 1:
-        ctx.enqueue_function[g_h_1](AoBm, Woq, Wos, Ph, Int32(m), Int32(H), Int32(H), grid_dim=ceildiv(H, ROW_WAVES), block_dim=ROW_THREADS)
-    else:
-        ctx.enqueue_function[g_h_v](AoBm, Woq, Wos, Ph, Int32(m), Int32(H), Int32(H), grid_dim=ceildiv(H, ROW_WAVES), block_dim=ROW_THREADS)
+    gemm_q8(ctx, AoBm, Woq, Wos, Ph, m, H, H)
     ctx.enqueue_function[r_add](Ph, Xm, Int32(m), Int32(H), grid_dim=ceildiv(m * H, 256), block_dim=256)
 
     var PostAttnNorm = tens_f32(ctx, wbuf, off[e + 7], H, h_layout)
@@ -391,17 +215,10 @@ def blk32_forward(
     var Pu = TileTensor(p_ffn2_d, p_ffn)
     var Ph2 = TileTensor(p_h_d, p_h)
     var FgBm = TileTensor(fgb_d, ffnm_layout)
-    if m == 1:
-        ctx.enqueue_function[g_ffn_1](CurBm, Wfgq, Wfgs, Pg, Int32(m), Int32(FFN), Int32(H), grid_dim=ceildiv(FFN, ROW_WAVES), block_dim=ROW_THREADS)
-        ctx.enqueue_function[g_ffn_1](CurBm, Wfuq, Wfus, Pu, Int32(m), Int32(FFN), Int32(H), grid_dim=ceildiv(FFN, ROW_WAVES), block_dim=ROW_THREADS)
-    else:
-        ctx.enqueue_function[g_ffn_v](CurBm, Wfgq, Wfgs, Pg, Int32(m), Int32(FFN), Int32(H), grid_dim=ceildiv(FFN, ROW_WAVES), block_dim=ROW_THREADS)
-        ctx.enqueue_function[g_ffn_v](CurBm, Wfuq, Wfus, Pu, Int32(m), Int32(FFN), Int32(H), grid_dim=ceildiv(FFN, ROW_WAVES), block_dim=ROW_THREADS)
+    gemm_q8(ctx, CurBm, Wfgq, Wfgs, Pg, m, FFN, H)
+    gemm_q8(ctx, CurBm, Wfuq, Wfus, Pu, m, FFN, H)
     ctx.enqueue_function[r_swiglu](Pg, Pu, FgBm, Int32(m), Int32(FFN), grid_dim=ceildiv(m * FFN, 256), block_dim=256)
-    if m == 1:
-        ctx.enqueue_function[g_down_1](FgBm, Wfdq, Wfds, Ph2, Int32(m), Int32(H), Int32(FFN), grid_dim=ceildiv(H, ROW_WAVES), block_dim=ROW_THREADS)
-    else:
-        ctx.enqueue_function[g_down_v](FgBm, Wfdq, Wfds, Ph2, Int32(m), Int32(H), Int32(FFN), grid_dim=ceildiv(H, ROW_WAVES), block_dim=ROW_THREADS)
+    gemm_q8(ctx, FgBm, Wfdq, Wfds, Ph2, m, H, FFN)
     ctx.enqueue_function[r_add](Ph2, Xm, Int32(m), Int32(H), grid_dim=ceildiv(m * H, 256), block_dim=256)
 
     var SharedHeadNorm = tens_f32(ctx, wbuf, off[e + 14], H, h_layout)
@@ -412,10 +229,7 @@ def blk32_forward(
         var Wheadq = tens_q8q(ctx, wbuf, off[e - 1], H * VOCAB, q_h_v)
         var Wheads = tens_q8s(ctx, wbuf, off[e - 1], H * VOCAB, s_h_v)
         var Pv = TileTensor(p_v_d, p_v)
-        if m == 1:
-            ctx.enqueue_function[g_head_1](CurBm, Wheadq, Wheads, Pv, Int32(m), Int32(VOCAB), Int32(H), grid_dim=ceildiv(VOCAB, ROW_WAVES), block_dim=ROW_THREADS)
-        else:
-            ctx.enqueue_function[g_head_v](CurBm, Wheadq, Wheads, Pv, Int32(m), Int32(VOCAB), Int32(H), grid_dim=ceildiv(VOCAB, ROW_WAVES), block_dim=ROW_THREADS)
+        gemm_q8(ctx, CurBm, Wheadq, Wheads, Pv, m, VOCAB, H)
         ctx.enqueue_function[r_head](Pv, Logitsm, Int32(m), Int32(VOCAB), grid_dim=ceildiv(m * VOCAB, 256), block_dim=256)
         ctx.enqueue_function[argmax_d](Logitsm, Dtok, Int32(VOCAB), Int32(0), grid_dim=m, block_dim=256)
 
@@ -719,20 +533,11 @@ def main() raises:
                 var AoB = TileTensor(resb_d, xflat_layout)
                 var AoBm = TileTensor(resb_d, xm_layout)
 
-                if m == 1:
-                    ctx.enqueue_function[g_qf_1](CurBm, Wqq, Wqs, Pqf, Int32(m), Int32(QF), Int32(H), grid_dim=ceildiv(QF, ROW_WAVES), block_dim=ROW_THREADS)
-                else:
-                    ctx.enqueue_function[g_qf_v](CurBm, Wqq, Wqs, Pqf, Int32(m), Int32(QF), Int32(H), grid_dim=ceildiv(QF, ROW_WAVES), block_dim=ROW_THREADS)
+                gemm_q8(ctx, CurBm, Wqq, Wqs, Pqf, m, QF, H)
                 ctx.enqueue_function[r_qf](Pqf, Qfm, Int32(m), Int32(QF), grid_dim=ceildiv(m * QF, 256), block_dim=256)
-                if m == 1:
-                    ctx.enqueue_function[g_kv_1](CurBm, Wkq, Wks, Pkv, Int32(m), Int32(KV), Int32(H), grid_dim=ceildiv(KV, ROW_WAVES), block_dim=ROW_THREADS)
-                else:
-                    ctx.enqueue_function[g_kv_v](CurBm, Wkq, Wks, Pkv, Int32(m), Int32(KV), Int32(H), grid_dim=ceildiv(KV, ROW_WAVES), block_dim=ROW_THREADS)
+                gemm_q8(ctx, CurBm, Wkq, Wks, Pkv, m, KV, H)
                 ctx.enqueue_function[r_kv](Pkv, Kflat, Int32(m), Int32(KV), grid_dim=ceildiv(m * KV, 256), block_dim=256)
-                if m == 1:
-                    ctx.enqueue_function[g_kv_1](CurBm, Wvq, Wvs, Pkv, Int32(m), Int32(KV), Int32(H), grid_dim=ceildiv(KV, ROW_WAVES), block_dim=ROW_THREADS)
-                else:
-                    ctx.enqueue_function[g_kv_v](CurBm, Wvq, Wvs, Pkv, Int32(m), Int32(KV), Int32(H), grid_dim=ceildiv(KV, ROW_WAVES), block_dim=ROW_THREADS)
+                gemm_q8(ctx, CurBm, Wvq, Wvs, Pkv, m, KV, H)
                 ctx.enqueue_function[r_kv](Pkv, Vflat, Int32(m), Int32(KV), grid_dim=ceildiv(m * KV, 256), block_dim=256)
                 ctx.enqueue_function[split_k](Qfm, Q, Gate, grid_dim=(NQH, m), block_dim=HD)
                 ctx.enqueue_function[hrms_q](Q, Qn, Float32(1e-6), grid_dim=m * NQH, block_dim=HD)
@@ -743,10 +548,7 @@ def main() raises:
                 ctx.enqueue_function[append_k](Vc, Vhd, Int32(pos), grid_dim=(NKVH, m), block_dim=HD)
                 ctx.enqueue_function[att_k](Q, Kc, Vc, Ao, Int32(pos + 1), Float32(0.0625), grid_dim=(NQH, m), block_dim=HD)
                 ctx.enqueue_function[gmul_k](Aoflat, Gate, AoB, Int32(m * H), grid_dim=ceildiv(m * H, 256), block_dim=256)
-                if m == 1:
-                    ctx.enqueue_function[g_h_1](AoBm, Woq, Wos, Ph, Int32(m), Int32(H), Int32(H), grid_dim=ceildiv(H, ROW_WAVES), block_dim=ROW_THREADS)
-                else:
-                    ctx.enqueue_function[g_h_v](AoBm, Woq, Wos, Ph, Int32(m), Int32(H), Int32(H), grid_dim=ceildiv(H, ROW_WAVES), block_dim=ROW_THREADS)
+                gemm_q8(ctx, AoBm, Woq, Wos, Ph, m, H, H)
                 ctx.enqueue_function[r_add](Ph, Xm, Int32(m), Int32(H), grid_dim=ceildiv(m * H, 256), block_dim=256)
                 att_i += 1
                 w += 7
@@ -777,16 +579,10 @@ def main() raises:
                 var So = TileTensor(so_d, o_layout)
                 var ResBm = TileTensor(resb_d, xm_layout)
 
-                if m == 1:
-                    ctx.enqueue_function[g_qf_1](CurBm, Wqkvq, Wqkvs, Pq, Int32(m), Int32(CONV), Int32(H), grid_dim=ceildiv(CONV, ROW_WAVES), block_dim=ROW_THREADS)
-                    ctx.enqueue_function[g_h_1](CurBm, Wzq, Wzs, Ph, Int32(m), Int32(H), Int32(H), grid_dim=ceildiv(H, ROW_WAVES), block_dim=ROW_THREADS)
-                    ctx.enqueue_function[g_32_1](CurBm, Waq, Was, Pab, Int32(m), Int32(NH_V), Int32(H), grid_dim=ceildiv(NH_V, ROW_WAVES), block_dim=ROW_THREADS)
-                    ctx.enqueue_function[g_32_1](CurBm, Wbq, Wbs, Pab2, Int32(m), Int32(NH_V), Int32(H), grid_dim=ceildiv(NH_V, ROW_WAVES), block_dim=ROW_THREADS)
-                else:
-                    ctx.enqueue_function[g_qf_v](CurBm, Wqkvq, Wqkvs, Pq, Int32(m), Int32(CONV), Int32(H), grid_dim=ceildiv(CONV, ROW_WAVES), block_dim=ROW_THREADS)
-                    ctx.enqueue_function[g_h_v](CurBm, Wzq, Wzs, Ph, Int32(m), Int32(H), Int32(H), grid_dim=ceildiv(H, ROW_WAVES), block_dim=ROW_THREADS)
-                    ctx.enqueue_function[g_32_v](CurBm, Waq, Was, Pab, Int32(m), Int32(NH_V), Int32(H), grid_dim=ceildiv(NH_V, ROW_WAVES), block_dim=ROW_THREADS)
-                    ctx.enqueue_function[g_32_v](CurBm, Wbq, Wbs, Pab2, Int32(m), Int32(NH_V), Int32(H), grid_dim=ceildiv(NH_V, ROW_WAVES), block_dim=ROW_THREADS)
+                gemm_q8(ctx, CurBm, Wqkvq, Wqkvs, Pq, m, CONV, H)
+                gemm_q8(ctx, CurBm, Wzq, Wzs, Ph, m, H, H)
+                gemm_q8(ctx, CurBm, Waq, Was, Pab, m, NH_V, H)
+                gemm_q8(ctx, CurBm, Wbq, Wbs, Pab2, m, NH_V, H)
                 ctx.enqueue_function[r_qf](Pq, Qkvm, Int32(m), Int32(CONV), grid_dim=ceildiv(m * CONV, 256), block_dim=256)
                 ctx.enqueue_function[r_h](Ph, Zm, Int32(m), Int32(H), grid_dim=ceildiv(m * H, 256), block_dim=256)
 
@@ -858,10 +654,7 @@ def main() raises:
                     var nw = perf_counter_ns()
                     pc[5] += Int(nw - tq)
                     tq = nw
-                if m == 1:
-                    ctx.enqueue_function[g_h_1](ResBm, Wsoutq, Wsouts, Ph, Int32(m), Int32(H), Int32(H), grid_dim=ceildiv(H, ROW_WAVES), block_dim=ROW_THREADS)
-                else:
-                    ctx.enqueue_function[g_h_v](ResBm, Wsoutq, Wsouts, Ph, Int32(m), Int32(H), Int32(H), grid_dim=ceildiv(H, ROW_WAVES), block_dim=ROW_THREADS)
+                gemm_q8(ctx, ResBm, Wsoutq, Wsouts, Ph, m, H, H)
                 ctx.enqueue_function[r_add](Ph, Xm, Int32(m), Int32(H), grid_dim=ceildiv(m * H, 256), block_dim=256)
                 ssm_i += 1
                 w += 10
@@ -892,17 +685,10 @@ def main() raises:
             var Pu = TileTensor(p_ffn2_d, p_ffn)
             var Ph2 = TileTensor(p_h_d, p_h)
             var FgBm = TileTensor(fgb_d, ffnm_layout)
-            if m == 1:
-                ctx.enqueue_function[g_ffn_1](CurBm, Wfgq, Wfgs, Pg, Int32(1), Int32(FFN), Int32(H), grid_dim=ceildiv(FFN, ROW_WAVES), block_dim=ROW_THREADS)
-                ctx.enqueue_function[g_ffn_1](CurBm, Wfuq, Wfus, Pu, Int32(1), Int32(FFN), Int32(H), grid_dim=ceildiv(FFN, ROW_WAVES), block_dim=ROW_THREADS)
-            else:
-                ctx.enqueue_function[g_ffn_v](CurBm, Wfgq, Wfgs, Pg, Int32(m), Int32(FFN), Int32(H), grid_dim=ceildiv(FFN, ROW_WAVES), block_dim=ROW_THREADS)
-                ctx.enqueue_function[g_ffn_v](CurBm, Wfuq, Wfus, Pu, Int32(m), Int32(FFN), Int32(H), grid_dim=ceildiv(FFN, ROW_WAVES), block_dim=ROW_THREADS)
+            gemm_q8(ctx, CurBm, Wfgq, Wfgs, Pg, m, FFN, H)
+            gemm_q8(ctx, CurBm, Wfuq, Wfus, Pu, m, FFN, H)
             ctx.enqueue_function[r_swiglu](Pg, Pu, FgBm, Int32(m), Int32(FFN), grid_dim=ceildiv(m * FFN, 256), block_dim=256)
-            if m == 1:
-                ctx.enqueue_function[g_down_1](FgBm, Wfdq, Wfds, Ph2, Int32(m), Int32(H), Int32(FFN), grid_dim=ceildiv(H, ROW_WAVES), block_dim=ROW_THREADS)
-            else:
-                ctx.enqueue_function[g_down_v](FgBm, Wfdq, Wfds, Ph2, Int32(m), Int32(H), Int32(FFN), grid_dim=ceildiv(H, ROW_WAVES), block_dim=ROW_THREADS)
+            gemm_q8(ctx, FgBm, Wfdq, Wfds, Ph2, m, H, FFN)
             ctx.enqueue_function[r_add](Ph2, Xm, Int32(m), Int32(H), grid_dim=ceildiv(m * H, 256), block_dim=256)
             w += 4
             if prof:
@@ -929,10 +715,7 @@ def main() raises:
             )
             var Wheadq = tens_q8q(ctx, wbuf, off[w + 1], H * VOCAB, q_h_v)
             var Wheads = tens_q8s(ctx, wbuf, off[w + 1], H * VOCAB, s_h_v)
-            if m == 1:
-                ctx.enqueue_function[g_head_1](CurBm, Wheadq, Wheads, Pv, Int32(m), Int32(VOCAB), Int32(H), grid_dim=ceildiv(VOCAB, ROW_WAVES), block_dim=ROW_THREADS)
-            else:
-                ctx.enqueue_function[g_head_v](CurBm, Wheadq, Wheads, Pv, Int32(m), Int32(VOCAB), Int32(H), grid_dim=ceildiv(VOCAB, ROW_WAVES), block_dim=ROW_THREADS)
+            gemm_q8(ctx, CurBm, Wheadq, Wheads, Pv, m, VOCAB, H)
             ctx.enqueue_function[r_head](Pv, Logitsm, Int32(m), Int32(VOCAB), grid_dim=ceildiv(m * VOCAB, 256), block_dim=256)
             if win_spec:
                 var Dtok = TileTensor(dtok_d, dtok_layout)
